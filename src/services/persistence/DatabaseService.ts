@@ -1,10 +1,15 @@
 import { DatabaseSync } from 'node:sqlite';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
+import { IDatabaseAdapter } from './adapter/IDatabaseAdapter';
+import { SqliteDatabaseAdapter } from './adapter/SqliteDatabaseAdapter';
+import { PostgresDatabaseAdapter } from './adapter/PostgresDatabaseAdapter';
+import { PoolConfig } from 'pg';
 
 export class DatabaseService {
   private static instance: DatabaseService | null = null;
   private db: DatabaseSync;
+  private adapter: IDatabaseAdapter;
 
   private constructor(dbPath?: string) {
     if (!dbPath || dbPath === ':memory:') {
@@ -17,6 +22,7 @@ export class DatabaseService {
       this.db = new DatabaseSync(dbPath);
     }
 
+    this.adapter = new SqliteDatabaseAdapter(this.db);
     this.initializeSchema();
   }
 
@@ -31,8 +37,16 @@ export class DatabaseService {
     return new DatabaseService(dbPath);
   }
 
+  public static createPostgresAdapter(config: PoolConfig): PostgresDatabaseAdapter {
+    return new PostgresDatabaseAdapter(config);
+  }
+
   public getDb(): DatabaseSync {
     return this.db;
+  }
+
+  public getAdapter(): IDatabaseAdapter {
+    return this.adapter;
   }
 
   private initializeSchema(): void {
@@ -159,6 +173,7 @@ export class DatabaseService {
       CREATE TABLE IF NOT EXISTS audit_logs (
         id TEXT PRIMARY KEY,
         tenant_id TEXT NOT NULL,
+        seq INTEGER NOT NULL DEFAULT 1,
         user_id TEXT NOT NULL,
         user_email TEXT,
         action TEXT NOT NULL,
