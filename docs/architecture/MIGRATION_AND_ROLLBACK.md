@@ -54,11 +54,12 @@ Run synthetic verification scripts checking:
 If migration fails before health check sign-off, execute down-migration script:
 ```sql
 -- DOWN MIGRATION (ROLLBACK)
-DROP TRIGGER IF EXISTS audit_logs_no_update ON audit_logs;
-DROP TRIGGER IF EXISTS audit_logs_no_delete ON audit_logs;
+DROP RULE IF EXISTS audit_logs_no_update ON audit_logs;
+DROP RULE IF EXISTS audit_logs_no_delete ON audit_logs;
 
 DROP TABLE IF EXISTS webhook_events CASCADE;
 DROP TABLE IF EXISTS audit_logs CASCADE;
+DROP TABLE IF EXISTS brute_force_locks CASCADE;
 DROP TABLE IF EXISTS rate_limit_buckets CASCADE;
 DROP TABLE IF EXISTS pairing_tokens CASCADE;
 DROP TABLE IF EXISTS devices CASCADE;
@@ -67,7 +68,8 @@ DROP TABLE IF EXISTS organization_members CASCADE;
 DROP TABLE IF EXISTS subscriptions CASCADE;
 DROP TABLE IF EXISTS organizations CASCADE;
 
-DROP FUNCTION IF EXISTS auth.current_tenant_id();
+DROP FUNCTION IF EXISTS public.current_user_role();
+DROP FUNCTION IF EXISTS public.current_tenant_id();
 ```
 
 ---

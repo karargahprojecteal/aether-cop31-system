@@ -125,6 +125,14 @@ CREATE TABLE IF NOT EXISTS rate_limit_buckets (
 );
 CREATE INDEX IF NOT EXISTS idx_rate_limit_expiry ON rate_limit_buckets(expires_at);
 
+-- 8b. BRUTE FORCE LOCKOUTS (Pairing & Endpoint Attack Prevention)
+CREATE TABLE IF NOT EXISTS brute_force_locks (
+    lock_key TEXT PRIMARY KEY,
+    failed_count INTEGER NOT NULL DEFAULT 1,
+    locked_until_ms BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_brute_force_lock ON brute_force_locks(locked_until_ms);
+
 -- 9. IMMUTABLE AUDIT LOGS (Hash-Chained & Tamper-Evident)
 CREATE TABLE IF NOT EXISTS audit_logs (
     id TEXT PRIMARY KEY DEFAULT ('aud-' || gen_random_uuid()),
@@ -159,44 +167,164 @@ CREATE TABLE IF NOT EXISTS webhook_events (
 CREATE INDEX IF NOT EXISTS idx_webhook_provider_event ON webhook_events(provider, event_id);
 
 -- ==============================================================================
--- ROW-LEVEL SECURITY (RLS) POLICIES
+-- ROW-LEVEL SECURITY (RLS) POLICIES & FUNCTIONS
 -- ==============================================================================
 
-ALTER TABLE organizations ENABLE ROW LEVEL SECURITY;
-ALTER TABLE subscriptions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE organization_members ENABLE ROW LEVEL SECURITY;
-ALTER TABLE homes ENABLE ROW LEVEL SECURITY;
-ALTER TABLE devices ENABLE ROW LEVEL SECURITY;
-ALTER TABLE pairing_tokens ENABLE ROW LEVEL SECURITY;
-ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
-
 -- Helper function to extract current authenticated user's tenant ID
-CREATE OR REPLACE FUNCTION auth.current_tenant_id() RETURNS TEXT AS $$
+-- Bound to public schema with explicit search_path to prevent injection
+CREATE OR REPLACE FUNCTION public.current_tenant_id() RETURNS TEXT AS $$
     SELECT tenant_id 
     FROM organization_members 
     WHERE user_id = auth.uid()::text 
     LIMIT 1;
-$$ LANGUAGE SQL STABLE SECURITY DEFINER;
+$$ LANGUAGE SQL STABLE SECURITY DEFINER SET search_path = public;
 
--- HOMES RLS
-CREATE POLICY homes_tenant_isolation ON homes
-    FOR ALL
-    USING (tenant_id = auth.current_tenant_id())
-    WITH CHECK (tenant_id = auth.current_tenant_id());
+-- Helper function to extract current authenticated user's role in their tenant
+CREATE OR REPLACE FUNCTION public.current_user_role() RETURNS TEXT AS $$
+    SELECT role 
+    FROM organization_members 
+    WHERE user_id = auth.uid()::text AND tenant_id = public.current_tenant_id()
+    LIMIT 1;
+$$ LANGUAGE SQL STABLE SECURITY DEFINER SET search_path = public;
 
--- DEVICES RLS
-CREATE POLICY devices_tenant_isolation ON devices
-    FOR ALL
-    USING (tenant_id = auth.current_tenant_id())
-    WITH CHECK (tenant_id = auth.current_tenant_id());
+-- 1. ORGANIZATIONS RLS & FORCE RLS
+ALTER TABLE organizations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE organizations FORCE ROW LEVEL SECURITY;
 
--- PAIRING TOKENS RLS
-CREATE POLICY pairing_tokens_tenant_isolation ON pairing_tokens
-    FOR ALL
-    USING (tenant_id = auth.current_tenant_id())
-    WITH CHECK (tenant_id = auth.current_tenant_id());
-
--- AUDIT LOGS RLS (Read-only to tenant members, insertable by system)
-CREATE POLICY audit_logs_tenant_read ON audit_logs
+CREATE POLICY organizations_tenant_select ON organizations
     FOR SELECT
-    USING (tenant_id = auth.current_tenant_id());
+    USING (id = public.current_tenant_id());
+
+CREATE POLICY organizations_tenant_insert ON organizations
+    FOR INSERT
+    WITH CHECK (auth.uid() IS NOT NULL);
+
+CREATE POLICY organizations_tenant_update ON organizations
+    FOR UPDATE
+    USING (id = public.current_tenant_id() AND public.current_user_role() = 'OWNER')
+    WITH CHECK (id = public.current_tenant_id() AND public.current_user_role() = 'OWNER');
+
+CREATE POLICY organizations_tenant_delete ON organizations
+    FOR DELETE
+    USING (id = public.current_tenant_id() AND public.current_user_role() = 'OWNER');
+
+-- 2. SUBSCRIPTIONS RLS & FORCE RLS
+ALTER TABLE subscriptions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE subscriptions FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY subscriptions_tenant_select ON subscriptions
+    FOR SELECT
+    USING (tenant_id = public.current_tenant_id());
+
+CREATE POLICY subscriptions_tenant_insert ON subscriptions
+    FOR INSERT
+    WITH CHECK (tenant_id = public.current_tenant_id() OR auth.uid() IS NOT NULL);
+
+CREATE POLICY subscriptions_tenant_update ON subscriptions
+    FOR UPDATE
+    USING (tenant_id = public.current_tenant_id() AND public.current_user_role() = 'OWNER')
+    WITH CHECK (tenant_id = public.current_tenant_id());
+
+CREATE POLICY subscriptions_tenant_delete ON subscriptions
+    FOR DELETE
+    USING (tenant_id = public.current_tenant_id() AND public.current_user_role() = 'OWNER');
+
+-- 3. ORGANIZATION MEMBERS RLS & FORCE RLS
+ALTER TABLE organization_members ENABLE ROW LEVEL SECURITY;
+ALTER TABLE organization_members FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY org_members_tenant_select ON organization_members
+    FOR SELECT
+    USING (tenant_id = public.current_tenant_id() OR user_id = auth.uid()::text);
+
+CREATE POLICY org_members_tenant_insert ON organization_members
+    FOR INSERT
+    WITH CHECK (
+        (tenant_id = public.current_tenant_id() AND public.current_user_role() IN ('OWNER', 'ENERGY_MANAGER'))
+        OR (user_id = auth.uid()::text)
+    );
+
+CREATE POLICY org_members_tenant_update ON organization_members
+    FOR UPDATE
+    USING (tenant_id = public.current_tenant_id() AND public.current_user_role() = 'OWNER')
+    WITH CHECK (tenant_id = public.current_tenant_id());
+
+CREATE POLICY org_members_tenant_delete ON organization_members
+    FOR DELETE
+    USING (tenant_id = public.current_tenant_id() AND public.current_user_role() = 'OWNER');
+
+-- 4. HOMES RLS & FORCE RLS
+ALTER TABLE homes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE homes FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY homes_tenant_select ON homes
+    FOR SELECT
+    USING (tenant_id = public.current_tenant_id());
+
+CREATE POLICY homes_tenant_insert ON homes
+    FOR INSERT
+    WITH CHECK (tenant_id = public.current_tenant_id() AND public.current_user_role() IN ('OWNER', 'ENERGY_MANAGER'));
+
+CREATE POLICY homes_tenant_update ON homes
+    FOR UPDATE
+    USING (tenant_id = public.current_tenant_id() AND public.current_user_role() IN ('OWNER', 'ENERGY_MANAGER'))
+    WITH CHECK (tenant_id = public.current_tenant_id());
+
+CREATE POLICY homes_tenant_delete ON homes
+    FOR DELETE
+    USING (tenant_id = public.current_tenant_id() AND public.current_user_role() = 'OWNER');
+
+-- 5. DEVICES RLS & FORCE RLS
+ALTER TABLE devices ENABLE ROW LEVEL SECURITY;
+ALTER TABLE devices FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY devices_tenant_select ON devices
+    FOR SELECT
+    USING (tenant_id = public.current_tenant_id());
+
+CREATE POLICY devices_tenant_insert ON devices
+    FOR INSERT
+    WITH CHECK (tenant_id = public.current_tenant_id() AND public.current_user_role() IN ('OWNER', 'ENERGY_MANAGER'));
+
+CREATE POLICY devices_tenant_update ON devices
+    FOR UPDATE
+    USING (tenant_id = public.current_tenant_id() AND public.current_user_role() IN ('OWNER', 'ENERGY_MANAGER'))
+    WITH CHECK (tenant_id = public.current_tenant_id());
+
+CREATE POLICY devices_tenant_delete ON devices
+    FOR DELETE
+    USING (tenant_id = public.current_tenant_id() AND public.current_user_role() = 'OWNER');
+
+-- 6. PAIRING TOKENS RLS & FORCE RLS
+ALTER TABLE pairing_tokens ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pairing_tokens FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY pairing_tokens_tenant_select ON pairing_tokens
+    FOR SELECT
+    USING (tenant_id = public.current_tenant_id());
+
+CREATE POLICY pairing_tokens_tenant_insert ON pairing_tokens
+    FOR INSERT
+    WITH CHECK (tenant_id = public.current_tenant_id() AND public.current_user_role() IN ('OWNER', 'ENERGY_MANAGER'));
+
+CREATE POLICY pairing_tokens_tenant_update ON pairing_tokens
+    FOR UPDATE
+    USING (tenant_id = public.current_tenant_id())
+    WITH CHECK (tenant_id = public.current_tenant_id());
+
+CREATE POLICY pairing_tokens_tenant_delete ON pairing_tokens
+    FOR DELETE
+    USING (tenant_id = public.current_tenant_id() AND public.current_user_role() = 'OWNER');
+
+-- 7. AUDIT LOGS RLS & FORCE RLS
+ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE audit_logs FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY audit_logs_tenant_select ON audit_logs
+    FOR SELECT
+    USING (tenant_id = public.current_tenant_id());
+
+CREATE POLICY audit_logs_tenant_insert ON audit_logs
+    FOR INSERT
+    WITH CHECK (tenant_id = public.current_tenant_id());
+
