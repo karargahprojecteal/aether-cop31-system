@@ -1,29 +1,30 @@
-import { DeviceRecord, IntegrationPathway } from '../../types/residential';
+import * as crypto from 'node:crypto';
+import { DeviceRecord } from '../../types/residential';
+import { TenantRepository } from '../persistence/TenantRepository';
 
 export class DeviceRegistry {
-  private devices: Map<string, DeviceRecord> = new Map();
+  private tenantRepo: TenantRepository;
 
-  constructor() {
-    this.seedDefaultDevices();
+  constructor(tenantRepo?: TenantRepository) {
+    this.tenantRepo = tenantRepo || new TenantRepository();
   }
 
   public registerDevice(record: Omit<DeviceRecord, 'id' | 'createdAt' | 'pairingStatus'>): DeviceRecord {
-    const id = `dev-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+    const id = `dev-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
     const newDevice: DeviceRecord = {
       ...record,
       id,
       pairingStatus: 'PAIRED',
       createdAt: new Date().toISOString(),
       lastSeenAt: new Date().toISOString(),
+      status: 'ONLINE',
     };
-    this.devices.set(id, newDevice);
-    return newDevice;
+    return this.tenantRepo.registerDevice(newDevice);
   }
 
   public getDevice(tenantId: string, deviceId: string): DeviceRecord | null {
-    const device = this.devices.get(deviceId);
+    const device = this.tenantRepo.getDevice(tenantId, deviceId);
     if (!device) return null;
-    // Strict tenant isolation check
     if (device.tenantId !== tenantId) {
       throw new Error(`Security Violation: Tenant ${tenantId} cannot access device ${deviceId}`);
     }
@@ -31,83 +32,26 @@ export class DeviceRegistry {
   }
 
   public listDevicesForHome(tenantId: string, homeId: string): DeviceRecord[] {
-    const result: DeviceRecord[] = [];
-    for (const device of this.devices.values()) {
-      if (device.tenantId === tenantId && device.homeId === homeId) {
-        result.push(device);
-      }
-    }
-    return result;
+    return this.tenantRepo.listDevices(tenantId, homeId);
   }
 
-  public updateLastSeen(tenantId: string, deviceId: string): void {
-    const device = this.getDevice(tenantId, deviceId);
-    if (device) {
-      device.lastSeenAt = new Date().toISOString();
-      this.devices.set(deviceId, device);
-    }
+  public updateLastSeen(_tenantId: string, _deviceId: string): void {
+    // Handled in heartbeat update
   }
 
   public revokeDevice(tenantId: string, deviceId: string): boolean {
-    const device = this.getDevice(tenantId, deviceId);
+    const device = this.tenantRepo.getDevice(tenantId, deviceId);
     if (!device) return false;
     device.pairingStatus = 'REVOKED';
-    this.devices.set(deviceId, device);
+    device.status = 'DISCONNECTED';
     return true;
   }
 
   public countDevices(tenantId: string, homeId?: string): number {
-    let count = 0;
-    for (const d of this.devices.values()) {
-      if (d.tenantId === tenantId && (!homeId || d.homeId === homeId)) {
-        if (d.pairingStatus === 'PAIRED') {
-          count++;
-        }
-      }
+    if (homeId) {
+      return this.tenantRepo.countDevices(tenantId, homeId);
     }
-    return count;
-  }
-
-  private seedDefaultDevices(): void {
-    const defaultHomeId = 'home-etkim-antalya';
-    const defaultTenantId = 'tenant-karargah-etkim';
-
-    const defaultMainsMeter: DeviceRecord = {
-      id: 'dev-mains-01',
-      tenantId: defaultTenantId,
-      homeId: defaultHomeId,
-      name: 'Ana Tesis Akıllı Sayaç & Frekans Dinleyici',
-      deviceType: 'MAIN_METER',
-      adapterType: 'SMART_METER',
-      manufacturer: 'AETHER NILM Virtual Meter',
-      model: 'OSOS-HAL-2026',
-      serialNumber: 'TR-ANT-2026-0042',
-      pairingStatus: 'PAIRED',
-      measurementQuality: 'PHYSICAL_METERED',
-      isSubMeteredOnly: false,
-      lastSeenAt: new Date().toISOString(),
-      createdAt: new Date().toISOString(),
-      metadata: { port: 'RS485-Modbus-RTU', baudRate: 9600 },
-    };
-
-    const heatPumpSubmeter: DeviceRecord = {
-      id: 'dev-sub-hvac',
-      tenantId: defaultTenantId,
-      homeId: defaultHomeId,
-      name: 'Isı Pompası & Chiller Alt Sayaç',
-      deviceType: 'SUB_METER_RELAY',
-      adapterType: 'LOCAL_GATEWAY',
-      manufacturer: 'Shelly',
-      model: 'Pro 3EM',
-      pairingStatus: 'PAIRED',
-      measurementQuality: 'SUB_METERED',
-      isSubMeteredOnly: true,
-      lastSeenAt: new Date().toISOString(),
-      createdAt: new Date().toISOString(),
-    };
-
-    this.devices.set(defaultMainsMeter.id, defaultMainsMeter);
-    this.devices.set(heatPumpSubmeter.id, heatPumpSubmeter);
+    return this.tenantRepo.listDevices(tenantId).length;
   }
 }
 

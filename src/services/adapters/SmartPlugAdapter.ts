@@ -1,4 +1,4 @@
-import { IRuntimeAdapter, AdapterHealth } from './IRuntimeAdapter';
+import { IRuntimeAdapter, AdapterHealth, AdapterCapability, AdapterConnectionState } from './IRuntimeAdapter';
 import { NormalizedEnergyMeasurement, IntegrationPathway } from '../../types/residential';
 import { EnergyDataNormalizer } from '../integration/EnergyDataNormalizer';
 
@@ -14,14 +14,24 @@ export class SmartPlugAdapter implements IRuntimeAdapter {
   public readonly adapterId: string;
   public readonly adapterType: IntegrationPathway = 'SMART_PLUG';
 
+  public readonly capability: AdapterCapability = {
+    lifecycleStage: 'STAGE_2_PROTOCOL_IMPLEMENTED',
+    requiresCertifiedElectrician: false, // DIY appliance plug-in
+    supportsBiDirectionalControl: false,  // Passive telemetry only
+    isPassiveReadOnly: true,
+    physicalHardwareAttached: false,
+    physicalHardwareEvidence: 'Tested with synthetic Tuya/Shelly plug fixtures.',
+    supportedTransports: ['SMART_PLUG_API'],
+  };
+
   private tenantId: string = '';
   private homeId: string = '';
   private deviceId: string = '';
-  private isConnected: boolean = false;
+  private connectionState: AdapterConnectionState = 'DISCONNECTED';
   private dataCallback: ((m: NormalizedEnergyMeasurement) => void) | null = null;
   private errorCallback: ((err: Error) => void) | null = null;
   private packetsReceived: number = 0;
-  private lastHeartbeat: string = new Date().toISOString();
+  private lastHeartbeat?: string;
 
   constructor(adapterId: string = 'smart-plug-submeter') {
     this.adapterId = adapterId;
@@ -33,14 +43,17 @@ export class SmartPlugAdapter implements IRuntimeAdapter {
     this.deviceId = config.deviceId || 'dev-smart-plug';
   }
 
-  public async connect(): Promise<boolean> {
-    this.isConnected = true;
-    this.lastHeartbeat = new Date().toISOString();
-    return true;
+  public async connect(): Promise<{ success: boolean; state: AdapterConnectionState; message: string }> {
+    this.connectionState = 'PROTOCOL_READY';
+    return {
+      success: true,
+      state: 'PROTOCOL_READY',
+      message: 'Smart plug API poller ready for appliance telemetry intake.',
+    };
   }
 
   public async disconnect(): Promise<void> {
-    this.isConnected = false;
+    this.connectionState = 'DISCONNECTED';
   }
 
   public onData(callback: (measurement: NormalizedEnergyMeasurement) => void): void {
@@ -52,14 +65,18 @@ export class SmartPlugAdapter implements IRuntimeAdapter {
   }
 
   public getHealth(): AdapterHealth {
+    const isConnected = this.connectionState === 'PROTOCOL_READY' || this.connectionState === 'CONNECTED_HARDWARE';
     return {
-      connected: this.isConnected,
-      status: this.isConnected ? 'ONLINE' : 'DISCONNECTED',
-      latencyMs: 16,
+      connected: isConnected,
+      connectionState: this.connectionState,
+      hardwareAttached: this.capability.physicalHardwareAttached,
+      status: isConnected ? 'ONLINE' : 'DISCONNECTED',
+      latencyMs: isConnected ? 16 : 0,
       packetsReceived: this.packetsReceived,
       packetErrors: 0,
       errorRatePercent: 0,
       lastHeartbeat: this.lastHeartbeat,
+      diagnosticMessage: isConnected ? 'Sub-metered appliance plug poller online.' : 'Disconnected.',
     };
   }
 

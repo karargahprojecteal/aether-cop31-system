@@ -20,7 +20,7 @@ describe('AETHER Multi-Tenant Isolation & Security', () => {
   };
 
   it('creates an isolated home under Tenant Alpha', () => {
-    tenantManagerInstance.createOrganization('Alpha Corp', 'admin@alpha.io', 'alpha-corp');
+    tenantManagerInstance.createOrganization('Alpha Corp', 'admin@alpha.io', 'alpha-corp', 'tenant-alpha');
     const home = tenantManagerInstance.createHome(tenantAContext, {
       tenantId: 'tenant-alpha',
       name: 'Alpha Eco Villa',

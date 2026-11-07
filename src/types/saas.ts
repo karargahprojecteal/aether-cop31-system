@@ -61,11 +61,13 @@ export interface AuditLogEntry {
   id: string;
   tenantId: string;
   userId: string;
-  userEmail: string;
+  userEmail?: string;
   action: string;
-  category: 'AUTH' | 'SECURITY' | 'PAIRING' | 'DEVICE' | 'SUBSCRIPTION' | 'AI_DECISION' | 'DATA_EXPORT';
+  category: 'AUTH' | 'SECURITY' | 'PAIRING' | 'DEVICE' | 'DEVICE_COMMAND' | 'TARIFF_CHANGE' | 'KVKK_DATA_EXPORT' | 'ACCOUNT_PURGE' | 'SUBSCRIPTION' | 'AI_DECISION' | 'DATA_EXPORT';
   details: Record<string, any>;
   ipAddress?: string;
   timestamp: string;
-  severity: 'INFO' | 'WARNING' | 'CRITICAL';
+  severity: 'INFO' | 'WARNING' | 'CRITICAL' | 'SECURITY_ALERT';
+  prevRecordHash?: string;
+  recordHash?: string;
 }

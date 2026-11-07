@@ -1,23 +1,23 @@
+import * as crypto from 'node:crypto';
 import { Organization, OrganizationMember, TenantContext } from '../../types/saas';
 import { HomeProfile } from '../../types/residential';
+import { TenantRepository } from '../persistence/TenantRepository';
 
 export class TenantManager {
-  private organizations: Map<string, Organization> = new Map();
-  private homes: Map<string, HomeProfile> = new Map();
-  private members: Map<string, OrganizationMember> = new Map();
+  private repository: TenantRepository;
 
-  constructor() {
-    this.seedDefaultTenantData();
+  constructor(repository?: TenantRepository) {
+    this.repository = repository || new TenantRepository();
   }
 
   public getOrganization(tenantId: string): Organization | null {
-    return this.organizations.get(tenantId) || null;
+    return this.repository.getOrganization(tenantId);
   }
 
-  public createOrganization(name: string, contactEmail: string, slug?: string): Organization {
-    const id = `tenant-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+  public createOrganization(name: string, contactEmail: string, slug?: string, customId?: string): Organization {
+    const id = customId || `tenant-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
     const finalSlug = slug || name.toLowerCase().replace(/[^a-z0-9]/g, '-');
-    
+
     const org: Organization = {
       id,
       name,
@@ -39,48 +39,39 @@ export class TenantManager {
       updatedAt: new Date().toISOString(),
     };
 
-    this.organizations.set(id, org);
-    return org;
+    return this.repository.createOrganization(org, org.plan);
   }
 
   public createHome(context: TenantContext, profile: Omit<HomeProfile, 'id' | 'createdAt'>): HomeProfile {
     this.validateTenantAccess(context, profile.tenantId);
 
-    const id = `home-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+    const id = (profile as any).id || `home-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
     const home: HomeProfile = {
       ...profile,
       id,
       createdAt: new Date().toISOString(),
     };
 
-    this.homes.set(id, home);
-    return home;
+    return this.repository.createHome(home);
   }
 
   public getHome(context: TenantContext, homeId: string): HomeProfile | null {
-    const home = this.homes.get(homeId);
+    // 1. Fetch from database using the authenticated tenant's ID constraint
+    const home = this.repository.getHome(context.tenantId, homeId);
     if (!home) return null;
 
-    // Strict Server-Side Tenant Isolation
+    // 2. Validate user home permissions (RBAC)
     this.validateTenantAccess(context, home.tenantId, homeId);
     return home;
   }
 
   public listHomes(context: TenantContext): HomeProfile[] {
-    const result: HomeProfile[] = [];
-    for (const home of this.homes.values()) {
-      if (home.tenantId === context.tenantId) {
-        if (
-          context.role === 'OWNER' || 
-          context.role === 'ENERGY_MANAGER' || 
-          context.accessibleHomeIds.length === 0 || 
-          context.accessibleHomeIds.includes(home.id)
-        ) {
-          result.push(home);
-        }
-      }
-    }
-    return result;
+    const allowedHomeIds =
+      context.role === 'RESIDENT_VIEWER' && context.accessibleHomeIds.length > 0
+        ? context.accessibleHomeIds
+        : undefined;
+
+    return this.repository.listHomes(context.tenantId, allowedHomeIds);
   }
 
   public addMember(context: TenantContext, member: Omit<OrganizationMember, 'id' | 'invitedAt'>): OrganizationMember {
@@ -89,30 +80,42 @@ export class TenantManager {
       throw new Error('Permission Denied: Only OWNER or ENERGY_MANAGER can invite members');
     }
 
-    const id = `mem-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+    const id = `mem-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
     const newMember: OrganizationMember = {
       ...member,
       id,
       invitedAt: new Date().toISOString(),
     };
 
-    this.members.set(id, newMember);
-    return newMember;
+    return this.repository.addMember(newMember);
   }
 
   public listMembers(context: TenantContext): OrganizationMember[] {
     this.validateTenantAccess(context, context.tenantId);
-    const list: OrganizationMember[] = [];
-    for (const m of this.members.values()) {
-      if (m.tenantId === context.tenantId) {
-        list.push(m);
-      }
-    }
-    return list;
+    return this.repository.listMembers(context.tenantId);
   }
 
   /**
-   * Enforces strict server-side tenant isolation boundary
+   * Resolves trusted server-side identity and tenant membership from database.
+   * Rejects client-supplied claims if no valid membership record exists.
+   */
+  public resolveAuthenticatedContext(userId: string, targetTenantId: string): TenantContext {
+    const member = this.repository.getMember(targetTenantId, userId);
+    if (!member) {
+      throw new Error(`Authentication/Authorization Failure: User '${userId}' has no valid membership in tenant '${targetTenantId}'`);
+    }
+
+    return {
+      tenantId: member.tenantId,
+      userId: member.userId,
+      userEmail: member.email,
+      role: member.role,
+      accessibleHomeIds: member.assignedHomeIds || [],
+    };
+  }
+
+  /**
+   * Enforces server-side tenant isolation boundary
    */
   public validateTenantAccess(context: TenantContext, targetTenantId: string, targetHomeId?: string): boolean {
     if (context.tenantId !== targetTenantId) {
@@ -126,97 +129,6 @@ export class TenantManager {
     }
 
     return true;
-  }
-
-  private seedDefaultTenantData(): void {
-    const tenantId = 'tenant-karargah-etkim';
-    const org: Organization = {
-      id: tenantId,
-      name: 'Antalya ETKİM Enerji & İnovasyon Kampüsü',
-      slug: 'etkim-antalya',
-      contactEmail: 'etkim@aether-energy.io',
-      plan: {
-        tier: 'ESTATE_ENTERPRISE',
-        status: 'ACTIVE',
-        currentPeriodEnd: '2027-11-07T00:00:00Z',
-        maxHomes: 999,
-        maxDevicesPerHome: 999,
-        telemetryIntervalSeconds: 1,
-        allowRealtimeWebSocket: true,
-        allowAutonomousControl: true,
-        geminiCallsPerDay: 5000,
-        usedGeminiCallsToday: 42,
-      },
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-    this.organizations.set(tenantId, org);
-
-    const primaryHome: HomeProfile = {
-      id: 'home-etkim-antalya',
-      tenantId,
-      name: 'Ana İnovasyon ve Laboratuvar Blokları',
-      address: 'Konyaaltı Kampüsü, Akdeniz Blv. No:14',
-      city: 'Antalya',
-      housingType: 'COMMERCIAL_UNIT',
-      squareMeters: 14500,
-      residentCount: 450,
-      meterInfrastructure: 'ELECTRONIC_SMART_METER',
-      primaryHeating: 'HEAT_PUMP',
-      hasSolarPv: true,
-      hasEvCharger: true,
-      tariffPlan: 'TURKISH_EPDK_3_TIME',
-      createdAt: new Date().toISOString(),
-      isPrimary: true,
-    };
-
-    const residentialVilla: HomeProfile = {
-      id: 'home-villa-duden',
-      tenantId,
-      name: 'Düden Akıllı Konut Pilotu (Villa 4B)',
-      address: 'Lara Cad. No:82/4, Muratpaşa',
-      city: 'Antalya',
-      housingType: 'DETACHED_VILLA',
-      squareMeters: 280,
-      residentCount: 4,
-      meterInfrastructure: 'IN_UNIT_BREAKER_PANEL',
-      primaryHeating: 'HEAT_PUMP',
-      hasSolarPv: true,
-      hasEvCharger: true,
-      tariffPlan: 'TURKISH_EPDK_3_TIME',
-      createdAt: new Date().toISOString(),
-      isPrimary: false,
-    };
-
-    this.homes.set(primaryHome.id, primaryHome);
-    this.homes.set(residentialVilla.id, residentialVilla);
-
-    const ownerMember: OrganizationMember = {
-      id: 'mem-aras-01',
-      tenantId,
-      userId: 'user-aras-demirtas',
-      name: 'Aras Demirtaş',
-      email: 'aras@aether-energy.io',
-      role: 'OWNER',
-      assignedHomeIds: [],
-      invitedAt: new Date().toISOString(),
-      joinedAt: new Date().toISOString(),
-    };
-
-    const energyManagerMember: OrganizationMember = {
-      id: 'mem-berkan-02',
-      tenantId,
-      userId: 'user-berkan-meral',
-      name: 'Berkan Meral',
-      email: 'berkan@aether-energy.io',
-      role: 'ENERGY_MANAGER',
-      assignedHomeIds: [],
-      invitedAt: new Date().toISOString(),
-      joinedAt: new Date().toISOString(),
-    };
-
-    this.members.set(ownerMember.id, ownerMember);
-    this.members.set(energyManagerMember.id, energyManagerMember);
   }
 }
 

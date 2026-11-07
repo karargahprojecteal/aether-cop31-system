@@ -1,46 +1,22 @@
 import { SubscriptionPlan, SubscriptionTier } from '../../types/saas';
-import { tenantManagerInstance } from './TenantManager';
-import { deviceRegistryInstance } from '../integration/DeviceRegistry';
-export interface IBillingProvider {
-  createCheckoutSession(tenantId: string, targetTier: SubscriptionTier): Promise<{ sessionUrl: string; sessionId: string }>;
-  verifyWebhook(rawPayload: string, signature: string, secret: string): boolean;
-  cancelSubscription(tenantId: string): Promise<boolean>;
-}
-
-export class MockBillingProvider implements IBillingProvider {
-  public async createCheckoutSession(tenantId: string, targetTier: SubscriptionTier): Promise<{ sessionUrl: string; sessionId: string }> {
-    return {
-      sessionUrl: `https://billing.aether-energy.io/sandbox/checkout?tenant=${tenantId}&tier=${targetTier}`,
-      sessionId: `cs_mock_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-    };
-  }
-
-  public verifyWebhook(rawPayload: string, signature: string, secret: string): boolean {
-    if (!signature || !secret || !rawPayload) return false;
-    try {
-      // In Node.js test/server environment:
-      if (typeof process !== 'undefined' && process.versions?.node) {
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const nodeCrypto = require('crypto');
-        const computedHmac = nodeCrypto.createHmac('sha256', secret).update(rawPayload).digest('hex');
-        return nodeCrypto.timingSafeEqual(Buffer.from(computedHmac), Buffer.from(signature));
-      }
-    } catch {
-      // Fallback in browser
-    }
-    return false;
-  }
-
-  public async cancelSubscription(_tenantId: string): Promise<boolean> {
-    return true;
-  }
-}
+import { IBillingProvider } from './billing/IBillingProvider';
+import { ProductionBillingProvider } from './billing/ProductionBillingProvider';
+import { SubscriptionRepository } from '../persistence/SubscriptionRepository';
+import { TenantRepository } from '../persistence/TenantRepository';
 
 export class SubscriptionService {
   private billingProvider: IBillingProvider;
+  private subscriptionRepo: SubscriptionRepository;
+  private tenantRepo: TenantRepository;
 
-  constructor(billingProvider?: IBillingProvider) {
-    this.billingProvider = billingProvider || new MockBillingProvider();
+  constructor(
+    billingProvider?: IBillingProvider,
+    subscriptionRepo?: SubscriptionRepository,
+    tenantRepo?: TenantRepository
+  ) {
+    this.subscriptionRepo = subscriptionRepo || new SubscriptionRepository();
+    this.tenantRepo = tenantRepo || new TenantRepository();
+    this.billingProvider = billingProvider || new ProductionBillingProvider(this.subscriptionRepo);
   }
 
   public getPlanTiers(): Record<SubscriptionTier, SubscriptionPlan> {
@@ -85,8 +61,8 @@ export class SubscriptionService {
   }
 
   public canAddHome(tenantId: string, currentHomesCount: number): { allowed: boolean; limit: number; current: number } {
-    const org = tenantManagerInstance.getOrganization(tenantId);
-    const limit = org ? org.plan.maxHomes : 1;
+    const sub = this.subscriptionRepo.getSubscription(tenantId);
+    const limit = sub ? sub.maxHomes : 1;
     return {
       allowed: currentHomesCount < limit,
       limit,
@@ -95,9 +71,9 @@ export class SubscriptionService {
   }
 
   public canAddDevice(tenantId: string, homeId: string): { allowed: boolean; limit: number; current: number } {
-    const org = tenantManagerInstance.getOrganization(tenantId);
-    const limit = org ? org.plan.maxDevicesPerHome : 3;
-    const current = deviceRegistryInstance.countDevices(tenantId, homeId);
+    const sub = this.subscriptionRepo.getSubscription(tenantId);
+    const limit = sub ? sub.maxDevicesPerHome : 3;
+    const current = this.tenantRepo.countDevices(tenantId, homeId);
     return {
       allowed: current < limit,
       limit,
@@ -106,18 +82,18 @@ export class SubscriptionService {
   }
 
   public upgradeTier(tenantId: string, newTier: SubscriptionTier): SubscriptionPlan {
-    const org = tenantManagerInstance.getOrganization(tenantId);
-    if (!org) {
-      throw new Error(`Organization '${tenantId}' not found`);
-    }
-
     const template = this.getPlanTiers()[newTier];
-    org.plan = {
+    const newPlan: SubscriptionPlan = {
       ...template,
       currentPeriodEnd: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
     };
 
-    return org.plan;
+    this.subscriptionRepo.updateTier(tenantId, newPlan);
+    return newPlan;
+  }
+
+  public consumeGeminiQuota(tenantId: string): boolean {
+    return this.subscriptionRepo.consumeGeminiQuota(tenantId);
   }
 
   public getBillingProvider(): IBillingProvider {

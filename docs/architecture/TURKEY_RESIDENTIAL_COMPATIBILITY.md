@@ -46,35 +46,47 @@ In Turkey, the residential electronic meter market is dominated by four domestic
 
 ---
 
-## 3. EPDK Tariff Structures & Accurate Calculation Model
+## 3. EPDK Tariff Structures & Versioned Calculation Model
 
-AETHER models the official EPDK residential multi-time tariff structure (3-zamanlı tarife):
+AETHER models the official EPDK residential multi-time tariff structure (3-zamanlı tarife) based on official regulatory decisions:
+- **Authority:** Enerji Piyasası Düzenleme Kurumu (EPDK)
+- **Official Gazette:** 2024-07-01 tarihli ve 32590 sayılı Resmî Gazete
+- **Tariff Version:** `2024-Q3-MESKEN-01`
+- **Rates (Single-term Residential):**
+  1. **Gündüz (Daytime): 06:00 – 17:00** (4.20 TRY/kWh)
+  2. **Puant (Peak): 17:00 – 22:00** (6.85 TRY/kWh — peak grid stress period)
+  3. **Gece (Night): 22:00 – 06:00** (2.15 TRY/kWh — lowest off-peak rate)
 
-1. **Gündüz (Daytime): 06:00 – 17:00** (Standard tariff rate)
-2. **Puant (Peak): 17:00 – 22:00** (Highest tariff rate, grid stress period — ~2.0x to 2.4x daytime cost)
-3. **Gece (Night): 22:00 – 06:00** (Lowest tariff rate — ~0.5x to 0.6x daytime cost)
-4. **Tek Zamanlı (Single Tariff):** Flat per-kWh rate with graduated tier (Kademe 1: up to 8 kWh/day (~240 kWh/month); Kademe 2: above threshold with ~1.5x price multiplier).
+### 3.1 Electronic Meter Clock Drift & Legacy DST Offset
+In Turkey, daylight saving time (DST) was permanently repealed in September 2016, fixing Turkey to permanent UTC+3. However:
+- Many electronic meters deployed before 2016 (Köhler, Luna, Viko) still have automatic winter-time clock adjustments hardcoded in their internal firmware.
+- Between late October and late March, these legacy meters fall back to UTC+2, creating a 1-hour shift between national wall-clock time and the meter's internal tariff registers.
+- AETHER incorporates `meterClockOffsetHours` (-1 or 0) in `EnergyIntelligenceEngine` and `homes` table to calculate the true physical billing register window.
 
-AETHER's **Peak Shaving** and **Load Shifting** engine is tuned specifically to migrate flexible residential loads (dishwasher, washing machine, EV charging, heat pump pre-heating) from **Puant (17:00–22:00)** into **Gece (22:00–06:00)**, resulting in up to 35% bill reduction without decreasing total energy usage.
+### 3.2 Projected vs. Measured Savings Honesty
+- **Projected Savings (Öngörülen Tasarruf):** Calculations produced prior to or immediately during load shift recommendations are explicitly flagged as `isVerifiedMeasuredSavings: false`.
+- **Measured Savings (Ölçülen Fiili Tasarruf):** Certified only after continuous physical smart-meter or sub-meter logging establishes a post-intervention verified baseline.
 
 ---
 
-## 4. National Grid Carbon Factor (Türkiye TEİAŞ Mix)
-- Turkey's national electricity generation mix fluctuates seasonally between hydro, solar, wind, lignite, imported coal, and natural gas.
-- **AETHER Grid Carbon Baseline:** 
-  - Off-peak / Daytime solar hours: ~380 – 430 $g\text{CO}_2/kWh$.
-  - Evening peak hours (gas & coal peakers online): ~520 – 580 $g\text{CO}_2/kWh$.
-  - Default average emission coefficient: **0.462 $\text{kg CO}_2/kWh$** (TEİAŞ / Ministry of Energy National GHG Inventory).
+## 4. National Grid Carbon Factor (Türkiye TEİAŞ & TEDAŞ Baseline)
+- **Source:** TEİAŞ 2023-2024 Türkiye Elektrik Üretim-İletim İstatistikleri & TEDAŞ Kayıp-Kaçak Raporu
+- **Generation-Level Emission Factor:** **0.462 kg CO₂e / kWh** (Santral çıkışı bara ortalaması)
+- **Consumption-Point Emission Factor:** **0.498 kg CO₂e / kWh** (İletim ve dağıtım teknik şebeke kayıpları [~%7.3] dahil sayaç teslim noktası faktörü)
+- **Diurnal Peaker Variation:**
+  - Off-peak Nighttime baseload (hydro & wind): ~0.385 kg CO₂e / kWh
+  - Midday solar peak generation: ~0.410 kg CO₂e / kWh
+  - Evening fossil peaker surge (17:00 - 22:00): ~0.542 kg CO₂e / kWh
 
 ---
 
 ## 5. Legal & Safety Boundaries under Turkish Law
 
-### 5.1 Elektrik İç Tesisleri Yönetmeliği (Electrical Indoor Installations Regulation)
-- Any intervention involving cutting main insulation, replacing circuit breakers, or altering service entrance cable connections must be performed by an Authorized Electrical Technician (*Yetkili Elektrikçi* - Chamber of Electrical Engineers / Vocational Qualification Authority MYK Level 4/5).
-- **AETHER Compliance Rule:** AETHER hardware instructions strictly mandate **non-invasive, split-core CT clamps** that latch around existing insulated conductors. The user is strictly warned not to expose bare busbars.
+### 5.1 Elektrik İç Tesisleri Yönetmeliği
+- Any physical intervention inside electrical distribution panels involving breakers, busbars, or service entrance cabling strictly requires an Authorized Electrical Technician (*Yetkili Elektrikçi* - EMO / MYK Level 4/5).
+- AETHER's `LocalGatewayAdapter` sets `requiresCertifiedElectrician: true`. DIY installation inside live panels is strictly prohibited.
 
 ### 5.2 KVKK (Kişisel Verilerin Korunması Kanunu - Law No. 6698)
-- 1 Hz high-frequency electrical telemetry reveals exact waking, sleeping, cooking, and presence patterns.
-- Under KVKK Article 5 & 6, explicit consent (*Açık Rıza Metni*) and privacy notice (*Aydınlatma Metni*) are displayed during onboarding.
-- Cloud storage encrypts all telemetry at rest. Data is anonymized before AI model training.
+- High-frequency electrical telemetry reveals exact occupancy, appliances, and daily routines.
+- Under KVKK Article 5 & 6, explicit consent is gathered during onboarding.
+- All persisted data is bound to tenant isolation boundaries, and users possess full data export and right-to-erasure (Right to be Forgotten) controls.

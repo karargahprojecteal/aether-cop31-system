@@ -30,42 +30,26 @@ export class GeminiServerService {
   }
 
   private initClient(): void {
-    // In server environment, read process.env.GEMINI_API_KEY. In client environment fallback to saved key.
-    const apiKey = typeof process !== 'undefined' && process.env?.GEMINI_API_KEY 
-      ? process.env.GEMINI_API_KEY 
-      : typeof window !== 'undefined' 
-      ? localStorage.getItem('AETHER_GEMINI_API_KEY') || '' 
-      : '';
+    // SECURE SERVER-SIDE ISOLATION:
+    // Strictly read from server environment variables.
+    // Provider credentials NEVER touch the browser bundle or client storage.
+    const apiKey = typeof process !== 'undefined' ? process.env?.GEMINI_API_KEY : undefined;
 
-    if (apiKey) {
+    if (apiKey && apiKey.trim()) {
       try {
-        this.genAiClient = new GoogleGenAI({ apiKey });
+        this.genAiClient = new GoogleGenAI({ apiKey: apiKey.trim() });
       } catch (err) {
-        console.warn('Could not initialize GoogleGenAI client:', err);
+        console.warn('Could not initialize GoogleGenAI client on server:', err);
       }
     }
   }
 
-  public setApiKey(key: string): void {
-    const cleanKey = key.trim();
-    if (cleanKey) {
-      this.genAiClient = new GoogleGenAI({ apiKey: cleanKey });
-      if (typeof window !== 'undefined') {
-        localStorage.setItem('AETHER_GEMINI_API_KEY', cleanKey);
-      }
-    } else {
-      this.genAiClient = null;
-      if (typeof window !== 'undefined') {
-        localStorage.removeItem('AETHER_GEMINI_API_KEY');
-      }
-    }
-    // Reset circuit breaker when a new key is provided
-    this.consecutiveFailures = 0;
-    this.circuitOpenUntil = 0;
-  }
-
-  public hasApiKey(): boolean {
+  public hasServerCredentials(): boolean {
     return !!this.genAiClient;
+  }
+
+  public isCircuitBreakerOpen(): boolean {
+    return this.circuitOpenUntil > Date.now();
   }
 
   /**
@@ -99,13 +83,13 @@ export class GeminiServerService {
       };
     }
 
-    // 2. Call Gemini API if client configured
+    // 2. Call Gemini API if server credentials configured
     if (this.genAiClient) {
       try {
         const decisions = await this.callGeminiWithRetry(telemetry, activeScenario);
         this.consecutiveFailures = 0;
 
-        // Record audit log
+        // Record immutable audit log
         auditLogServiceInstance.record({
           tenantId,
           userId: 'system-ai-engine',

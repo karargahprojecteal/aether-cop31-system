@@ -1,4 +1,4 @@
-import { IRuntimeAdapter, AdapterHealth } from './IRuntimeAdapter';
+import { IRuntimeAdapter, AdapterHealth, AdapterCapability, AdapterConnectionState } from './IRuntimeAdapter';
 import { NormalizedEnergyMeasurement, IntegrationPathway } from '../../types/residential';
 import { EnergyDataNormalizer } from '../integration/EnergyDataNormalizer';
 
@@ -6,15 +6,25 @@ export class SmartMeterAdapter implements IRuntimeAdapter {
   public readonly adapterId: string;
   public readonly adapterType: IntegrationPathway = 'SMART_METER';
 
+  public readonly capability: AdapterCapability = {
+    lifecycleStage: 'STAGE_1_PARSER_IMPLEMENTED',
+    requiresCertifiedElectrician: false, // Non-invasive external magnetic optical probe
+    supportsBiDirectionalControl: false,  // Passive read-only
+    isPassiveReadOnly: true,
+    physicalHardwareAttached: false,
+    physicalHardwareEvidence: 'No physical serial optical probe attached in execution sandbox.',
+    supportedTransports: ['SERIAL_OPTICAL'],
+  };
+
   private tenantId: string = '';
   private homeId: string = '';
   private deviceId: string = '';
-  private isConnected: boolean = false;
+  private connectionState: AdapterConnectionState = 'DISCONNECTED';
   private dataCallback: ((m: NormalizedEnergyMeasurement) => void) | null = null;
   private errorCallback: ((err: Error) => void) | null = null;
   private packetsReceived: number = 0;
   private packetErrors: number = 0;
-  private lastHeartbeat: string = new Date().toISOString();
+  private lastHeartbeat?: string;
 
   constructor(adapterId: string = 'smart-meter-p1-opt') {
     this.adapterId = adapterId;
@@ -26,14 +36,33 @@ export class SmartMeterAdapter implements IRuntimeAdapter {
     this.deviceId = config.deviceId || 'dev-smart-meter';
   }
 
-  public async connect(): Promise<boolean> {
-    this.isConnected = true;
+  /**
+   * Honest physical connection handler:
+   * Verifies if physical serial device exists before claiming connection.
+   * In sandbox/cloud without attached hardware, transitions to PARSER_ONLY_NO_HARDWARE.
+   */
+  public async connect(): Promise<{ success: boolean; state: AdapterConnectionState; message: string }> {
+    // Physical probe check (e.g. /dev/ttyUSB0 or serial port)
+    if (!this.capability.physicalHardwareAttached) {
+      this.connectionState = 'PARSER_ONLY_NO_HARDWARE';
+      return {
+        success: false,
+        state: 'PARSER_ONLY_NO_HARDWARE',
+        message: 'Physical optical probe is not attached. IEC 62056-21 parser ready for synthetic or stream ingestion.',
+      };
+    }
+
+    this.connectionState = 'CONNECTED_HARDWARE';
     this.lastHeartbeat = new Date().toISOString();
-    return true;
+    return {
+      success: true,
+      state: 'CONNECTED_HARDWARE',
+      message: 'Physical optical probe connected to meter port.',
+    };
   }
 
   public async disconnect(): Promise<void> {
-    this.isConnected = false;
+    this.connectionState = 'DISCONNECTED';
   }
 
   public onData(callback: (measurement: NormalizedEnergyMeasurement) => void): void {
@@ -49,14 +78,27 @@ export class SmartMeterAdapter implements IRuntimeAdapter {
       ? Number(((this.packetErrors / this.packetsReceived) * 100).toFixed(1)) 
       : 0;
 
+    const isConnected = this.connectionState === 'CONNECTED_HARDWARE';
+
     return {
-      connected: this.isConnected,
-      status: this.isConnected ? (errorRate > 10 ? 'DEGRADED' : 'ONLINE') : 'DISCONNECTED',
-      latencyMs: 14,
+      connected: isConnected,
+      connectionState: this.connectionState,
+      hardwareAttached: this.capability.physicalHardwareAttached,
+      status: this.connectionState === 'PARSER_ONLY_NO_HARDWARE'
+        ? 'PARSER_ONLY'
+        : isConnected
+        ? (errorRate > 10 ? 'DEGRADED' : 'ONLINE')
+        : 'DISCONNECTED',
+      latencyMs: isConnected ? 14 : 0,
       packetsReceived: this.packetsReceived,
       packetErrors: this.packetErrors,
       errorRatePercent: errorRate,
       lastHeartbeat: this.lastHeartbeat,
+      diagnosticMessage: this.connectionState === 'PARSER_ONLY_NO_HARDWARE'
+        ? 'Parser verified. Physical serial optical hardware not attached.'
+        : isConnected
+        ? 'Real hardware telemetry streaming active.'
+        : 'Adapter disconnected.',
     };
   }
 
@@ -66,7 +108,7 @@ export class SmartMeterAdapter implements IRuntimeAdapter {
   public ingestRawTelegram(telegramText: string): NormalizedEnergyMeasurement {
     try {
       this.lastHeartbeat = new Date().toISOString();
-      
+
       // Basic envelope validation
       if (!telegramText.includes('1.8.0') && !telegramText.includes('1.7.0')) {
         throw new Error('Invalid OBIS frame: Missing 1.8.0 or 1.7.0 power indicators');

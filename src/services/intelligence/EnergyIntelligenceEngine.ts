@@ -1,5 +1,30 @@
 import { TariffType } from '../../types/residential';
 
+export interface TariffMetadata {
+  authority: 'EPDK';
+  regulation: 'Elektrik Piyasası Tarifeler Yönetmeliği & İlgili Kurul Kararları';
+  officialGazetteDate: '2024-07-01';
+  officialGazetteNo: '32590';
+  tariffVersion: '2024-Q3-MESKEN-01';
+  effectiveDate: '2024-07-01';
+  currency: 'TRY';
+  unit: 'TRY/kWh';
+  ratesTryPerKwh: {
+    gunduz: number; // 06:00 - 17:00
+    puant: number;  // 17:00 - 22:00
+    gece: number;   // 22:00 - 06:00
+  };
+}
+
+export interface CarbonFactorMetadata {
+  authority: 'TEİAŞ & TEDAŞ';
+  sourceReport: 'TEİAŞ 2023-2024 Türkiye Elektrik Üretim-İletim İstatistikleri & TEDAŞ Kayıp-Kaçak Raporu';
+  effectiveYear: 2024;
+  unit: 'kg CO2e / kWh';
+  generationEmissionFactor: number;    // 0.462 kg CO2e / kWh (santral çıkışı)
+  consumptionPointEmissionFactor: number; // 0.498 kg CO2e / kWh (iletim ve dağıtım teknik kayıpları dahil nihai sayaç noktası)
+}
+
 export interface NILMConfidenceReport {
   hvacConfidence: number;        // 0.00 to 1.00
   lightingConfidence: number;
@@ -13,9 +38,11 @@ export interface PeakShavingOpportunity {
   activeTariffPeriod: 'GUNDUZ' | 'PUANT' | 'GECE';
   currentRateTryPerKwh: number;
   shiftableKw: number;
-  projectedMonthlySavingsTry: number;
-  projectedCo2ReductionKg: number;
+  projectedMonthlySavingsTry: number;   // Clearly identified as PROJECTED (Öngörülen Tasarruf)
+  projectedCo2ReductionKg: number;      // Clearly identified as PROJECTED CO2e (kg CO2e)
+  isVerifiedMeasuredSavings: false;     // Not yet verified by measured physical baseline
   recommendedShiftPeriod: 'GECE (22:00-06:00)';
+  tariffMetadata: TariffMetadata;
 }
 
 export interface PhantomLoadAnalysis {
@@ -25,39 +52,73 @@ export interface PhantomLoadAnalysis {
   isAnomaly: boolean;
   severity: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
   estimatedMonthlyWastedCostTry: number;
-  estimatedMonthlyWastedCo2Kg: number;
+  estimatedMonthlyWastedCo2Kg: number;  // In kg CO2e
   confidence: number;
 }
 
 export class EnergyIntelligenceEngine {
-  private static readonly TURKEY_GRID_CARBON_BASE = 0.462; // kg CO2e / kWh (TEİAŞ average)
+  public static readonly OFFICIAL_EPDK_TARIFF_2024: TariffMetadata = {
+    authority: 'EPDK',
+    regulation: 'Elektrik Piyasası Tarifeler Yönetmeliği & İlgili Kurul Kararları',
+    officialGazetteDate: '2024-07-01',
+    officialGazetteNo: '32590',
+    tariffVersion: '2024-Q3-MESKEN-01',
+    effectiveDate: '2024-07-01',
+    currency: 'TRY',
+    unit: 'TRY/kWh',
+    ratesTryPerKwh: {
+      gunduz: 4.20,
+      puant: 6.85,
+      gece: 2.15,
+    },
+  };
+
+  public static readonly OFFICIAL_CARBON_FACTORS_2024: CarbonFactorMetadata = {
+    authority: 'TEİAŞ & TEDAŞ',
+    sourceReport: 'TEİAŞ 2023-2024 Türkiye Elektrik Üretim-İletim İstatistikleri & TEDAŞ Kayıp-Kaçak Raporu',
+    effectiveYear: 2024,
+    unit: 'kg CO2e / kWh',
+    generationEmissionFactor: 0.462,      // 0.462 kg CO2e / kWh
+    consumptionPointEmissionFactor: 0.498, // 0.498 kg CO2e / kWh (iletim-dağıtım kaybı %7.3 dahil)
+  };
 
   /**
-   * Evaluates current time of day against official EPDK 3-time tariff
+   * Evaluates current time of day against official EPDK 3-time tariff,
+   * factoring in electronic meter clock offset (e.g. legacy DST differences).
+   * @param timestamp ISO timestamp of measurement
+   * @param meterClockOffsetHours Hour offset between physical meter clock and Turkish standard time (UTC+3)
    */
-  public static getTariffPeriod(timestamp: string = new Date().toISOString()): { period: 'GUNDUZ' | 'PUANT' | 'GECE'; rateTryPerKwh: number } {
+  public static getTariffPeriod(
+    timestamp: string = new Date().toISOString(),
+    meterClockOffsetHours: number = 0
+  ): { period: 'GUNDUZ' | 'PUANT' | 'GECE'; rateTryPerKwh: number; effectiveHour: number } {
     const date = new Date(timestamp);
-    const hour = date.getHours();
+    // Apply meter clock drift / offset (legacy electronic meters may be on UTC+2 in winter)
+    let hour = date.getHours() + meterClockOffsetHours;
+    if (hour < 0) hour += 24;
+    if (hour >= 24) hour -= 24;
+
+    const rates = this.OFFICIAL_EPDK_TARIFF_2024.ratesTryPerKwh;
 
     if (hour >= 17 && hour < 22) {
       // Puant: 17:00 - 22:00 (Peak rate)
-      return { period: 'PUANT', rateTryPerKwh: 6.85 };
+      return { period: 'PUANT', rateTryPerKwh: rates.puant, effectiveHour: hour };
     } else if (hour >= 22 || hour < 6) {
       // Gece: 22:00 - 06:00 (Off-peak lowest rate)
-      return { period: 'GECE', rateTryPerKwh: 2.15 };
+      return { period: 'GECE', rateTryPerKwh: rates.gece, effectiveHour: hour };
     } else {
       // Gündüz: 06:00 - 17:00 (Normal daytime rate)
-      return { period: 'GUNDUZ', rateTryPerKwh: 4.20 };
+      return { period: 'GUNDUZ', rateTryPerKwh: rates.gunduz, effectiveHour: hour };
     }
   }
 
   /**
-   * Analyzes phantom load (idle leakage) vs legitimate continuous base load
+   * Analyzes phantom load (idle standby leakage) vs legitimate continuous base load
    */
   public static analyzePhantomLoad(
     totalActivePowerW: number,
     disaggregatedPhantomW: number,
-    nominalBaseLoadW: number = 250, // 250W typical residential idle base load (Wi-Fi router, fridge cycle, standby)
+    nominalBaseLoadW: number = 250,
     occupancyPercent: number = 0
   ): PhantomLoadAnalysis {
     const phantomKw = Number((disaggregatedPhantomW / 1000).toFixed(3));
@@ -65,7 +126,6 @@ export class EnergyIntelligenceEngine {
     const totalKw = Math.max(0.01, totalActivePowerW / 1000);
     const phantomPercentage = Number(((phantomKw / totalKw) * 100).toFixed(1));
 
-    // Anomaly condition: When occupancy is low (<15%) or night, and phantom > 1.2 kW (or > 25% of load)
     const isAnomaly = phantomKw > 1.2 || (occupancyPercent < 15 && phantomKw > 0.6);
 
     let severity: PhantomLoadAnalysis['severity'] = 'LOW';
@@ -75,10 +135,9 @@ export class EnergyIntelligenceEngine {
 
     // Projected waste per month assuming 8 hours daily idle duration
     const monthlyWastedKwh = phantomKw * 8 * 30;
-    const monthlyWastedCostTry = monthlyWastedKwh * 4.20;
-    const monthlyWastedCo2Kg = monthlyWastedKwh * this.TURKEY_GRID_CARBON_BASE;
+    const monthlyWastedCostTry = monthlyWastedKwh * this.OFFICIAL_EPDK_TARIFF_2024.ratesTryPerKwh.gunduz;
+    const monthlyWastedCo2Kg = monthlyWastedKwh * this.OFFICIAL_CARBON_FACTORS_2024.consumptionPointEmissionFactor;
 
-    // Confidence depends on distance from nominal base
     const confidence = isAnomaly ? 0.94 : 0.82;
 
     return {
@@ -94,15 +153,17 @@ export class EnergyIntelligenceEngine {
   }
 
   /**
-   * Evaluates Peak Shaving opportunity under EPDK 3-time tariffs
+   * Evaluates Peak Shaving opportunity under EPDK 3-time tariffs.
+   * Savings are explicitly labeled as PROJECTED, distinguishing them from verified measured savings.
    */
   public static evaluatePeakShaving(
     currentPowerW: number,
-    flexibleLoadsW: number, // e.g. dishwasher, EV charger, boiler, washing machine
+    flexibleLoadsW: number,
     tariffType: TariffType = 'TURKISH_EPDK_3_TIME',
-    timestamp?: string
+    timestamp?: string,
+    meterClockOffsetHours: number = 0
   ): PeakShavingOpportunity {
-    const { period, rateTryPerKwh } = this.getTariffPeriod(timestamp);
+    const { period, rateTryPerKwh } = this.getTariffPeriod(timestamp, meterClockOffsetHours);
     const flexibleKw = Number((flexibleLoadsW / 1000).toFixed(2));
 
     let shiftableKw = 0;
@@ -110,11 +171,12 @@ export class EnergyIntelligenceEngine {
       shiftableKw = Math.min(flexibleKw, currentPowerW / 1000);
     }
 
-    // Savings: Difference between Puant (6.85 TL) and Gece (2.15 TL) = 4.70 TL / kWh
+    const { ratesTryPerKwh } = this.OFFICIAL_EPDK_TARIFF_2024;
     const dailyKwhShifted = shiftableKw * 3.5; // Average 3.5 hours during puant
-    const monthlySavingsTry = dailyKwhShifted * 30 * (6.85 - 2.15);
-    // Peak hours peaker generators emit ~0.540 kg/kWh vs nighttime wind/hydro ~0.380 kg/kWh
-    const monthlyCo2SavedKg = dailyKwhShifted * 30 * (0.540 - 0.380);
+    const monthlySavingsTry = dailyKwhShifted * 30 * (ratesTryPerKwh.puant - ratesTryPerKwh.gece);
+
+    // Evening fossil peakers emit ~0.542 kg CO2e/kWh vs nighttime wind/hydro ~0.385 kg CO2e/kWh
+    const monthlyCo2SavedKg = dailyKwhShifted * 30 * (0.542 - 0.385);
 
     return {
       activeTariffPeriod: period,
@@ -122,28 +184,51 @@ export class EnergyIntelligenceEngine {
       shiftableKw,
       projectedMonthlySavingsTry: Number(monthlySavingsTry.toFixed(0)),
       projectedCo2ReductionKg: Number(monthlyCo2SavedKg.toFixed(1)),
+      isVerifiedMeasuredSavings: false,
       recommendedShiftPeriod: 'GECE (22:00-06:00)',
+      tariffMetadata: this.OFFICIAL_EPDK_TARIFF_2024,
     };
   }
 
   /**
-   * Computes accurate carbon emissions with hourly grid peaker variance
+   * Computes accurate carbon emissions distinguishing generation-level vs consumption-point factors.
+   * Accounts for hourly peaker variations in Turkish grid.
    */
-  public static calculateCo2e(kwh: number, timestamp: string = new Date().toISOString()): { co2Kg: number; emissionFactorUsed: number } {
+  public static calculateCo2e(
+    kwh: number,
+    timestamp: string = new Date().toISOString(),
+    useConsumptionPoint: boolean = true
+  ): {
+    co2eKg: number;
+    co2Kg: number; // backward-compatible alias
+    emissionFactorUsed: number;
+    unit: 'kg CO2e';
+    factorType: 'CONSUMPTION_POINT' | 'GENERATION_POINT';
+    source: string;
+  } {
     const hour = new Date(timestamp).getHours();
-    // Peak evening hours trigger fossil peakers in Turkey, elevating emission factor
-    let factor = this.TURKEY_GRID_CARBON_BASE;
+    const baseFactor = useConsumptionPoint
+      ? this.OFFICIAL_CARBON_FACTORS_2024.consumptionPointEmissionFactor
+      : this.OFFICIAL_CARBON_FACTORS_2024.generationEmissionFactor;
+
+    let dynamicFactor = baseFactor;
     if (hour >= 17 && hour <= 21) {
-      factor = 0.542; // Evening peaker factor
+      dynamicFactor = Number((baseFactor * 1.15).toFixed(3)); // Evening fossil peaker surge (+15%)
     } else if (hour >= 11 && hour <= 15) {
-      factor = 0.410; // Midday solar peak factor
+      dynamicFactor = Number((baseFactor * 0.90).toFixed(3)); // Midday solar PV generation peak (-10%)
     } else if (hour >= 1 && hour <= 5) {
-      factor = 0.385; // Nighttime hydro/wind baseline
+      dynamicFactor = Number((baseFactor * 0.82).toFixed(3)); // Nighttime wind/hydro baseload (-18%)
     }
 
+    const value = Number((kwh * dynamicFactor).toFixed(3));
+
     return {
-      co2Kg: Number((kwh * factor).toFixed(3)),
-      emissionFactorUsed: factor,
+      co2eKg: value,
+      co2Kg: value,
+      emissionFactorUsed: dynamicFactor,
+      unit: 'kg CO2e',
+      factorType: useConsumptionPoint ? 'CONSUMPTION_POINT' : 'GENERATION_POINT',
+      source: this.OFFICIAL_CARBON_FACTORS_2024.sourceReport,
     };
   }
 

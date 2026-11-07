@@ -42,6 +42,7 @@ export interface NormalizedEnergyMeasurement {
 
 export type HousingType = 
   | 'APARTMENT_IN_BUILDING' 
+  | 'APARTMENT_FLAT' 
   | 'DETACHED_VILLA' 
   | 'COMMERCIAL_UNIT' 
   | 'RESIDENTIAL_ESTATE_SITE';
@@ -52,6 +53,7 @@ export type MeterInfrastructure =
   | 'ACCESSIBLE_P1_HAN_METER'   // European P1/HAN standard
   | 'LOCKED_BASEMENT_PANEL'     // Locked utility room without Wi-Fi
   | 'IN_UNIT_BREAKER_PANEL'     // Resident has direct access to sub-panel
+  | 'NONE_ESTIMATED'
   | 'UNKNOWN';
 
 export type TariffType = 
@@ -69,10 +71,12 @@ export interface HomeProfile {
   squareMeters: number;
   residentCount: number;
   meterInfrastructure: MeterInfrastructure;
-  primaryHeating: 'HEAT_PUMP' | 'NATURAL_GAS_COMBI' | 'ELECTRIC_RESISTANCE' | 'CENTRAL_DISTRICT';
+  meterClockOffsetHours?: number; // Support for meter clock drift / legacy DST offset
+  primaryHeating: 'HEAT_PUMP' | 'NATURAL_GAS_COMBI' | 'ELECTRIC_RESISTANCE' | 'CENTRAL_DISTRICT' | 'AC_INVERTER';
   hasSolarPv: boolean;
   hasEvCharger: boolean;
   tariffPlan: TariffType;
+  tariffVersion?: string;
   createdAt: string;
   isPrimary: boolean;
 }
@@ -82,14 +86,17 @@ export interface DeviceRecord {
   tenantId: string;
   homeId: string;
   name: string;
-  deviceType: 'MAIN_METER' | 'SUB_METER_RELAY' | 'SMART_PLUG' | 'GATEWAY' | 'MANUAL_INVOICE_SOURCE';
+  deviceType: 'MAIN_METER' | 'SUB_METER_RELAY' | 'SMART_PLUG' | 'GATEWAY' | 'MANUAL_INVOICE_SOURCE' | 'SOLAR_INVERTER' | 'EV_CHARGER' | 'HEAT_PUMP_GATEWAY' | 'VIRTUAL_SIMULATOR';
   adapterType: IntegrationPathway;
   manufacturer?: string;
   model?: string;
   serialNumber?: string;
-  pairingStatus: 'PAIRED' | 'PENDING' | 'REVOKED' | 'FAILED';
+  pairingStatus?: 'PAIRED' | 'PENDING' | 'REVOKED' | 'FAILED';
+  status?: 'ONLINE' | 'DEGRADED' | 'DISCONNECTED' | 'CALIBRATING';
   measurementQuality: MeasurementQuality;
   isSubMeteredOnly: boolean;
+  nominalPowerW?: number;
+  lastHeartbeat?: string;
   lastSeenAt?: string;
   createdAt: string;
   metadata?: Record<string, any>;

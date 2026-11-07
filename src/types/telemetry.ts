@@ -13,6 +13,8 @@ export interface NILMDisaggregation {
   industrialLoadKw: number;
   /** Çatı Güneş Enerjisi (GES) anlık üretim (kW) - Şebekeden çekilen yükü azaltır */
   solarGenerationKw: number;
+  batteryDischargeKw?: number;
+  netGridImportKw?: number;
 }
 
 export interface TelemetryPoint {

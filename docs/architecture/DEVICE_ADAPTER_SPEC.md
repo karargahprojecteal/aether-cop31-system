@@ -40,34 +40,45 @@ export interface NormalizedEnergyMeasurement {
 
 ---
 
-## 2. Common Adapter Lifecycle & Interface (`IRuntimeAdapter`)
+## 2. Common Adapter Lifecycle & Capability Contract (`IRuntimeAdapter`)
 
-Every adapter implements the `IRuntimeAdapter` contract:
+Every adapter implements the `IRuntimeAdapter` contract with four explicit lifecycle verification stages:
 
+### 2.1 Lifecycle Maturity Classification
+1. **STAGE_1_PARSER_IMPLEMENTED:** Telemetry parser is implemented and verified with synthetic raw frames (e.g. IEC 62056-21 OBIS telegram strings).
+2. **STAGE_2_PROTOCOL_IMPLEMENTED:** Protocol network transport (MQTT/TLS, REST, WebSocket) and sequence deduplication are implemented and verified with mock servers.
+3. **STAGE_3_LAB_HARDWARE_TESTED:** Validated on physical bench hardware in controlled lab setting with actual serial probes or DIN-rail CT clamps.
+4. **STAGE_4_PRODUCTION_ACCEPTED:** Field-accepted in commercial residential installation with signed telemetry accuracy verification.
+
+### 2.2 Adapter Capability & Safety Model
 ```typescript
-export interface AdapterHealth {
-  connected: boolean;
-  lastHeartbeat: string;
-  latencyMs: number;
-  packetsReceived: number;
-  packetErrors: number;
-  errorRatePercent: number;
-  reconnectAttempts: number;
-  status: 'ONLINE' | 'DEGRADED' | 'DISCONNECTED' | 'PAIRING_REQUIRED' | 'CONFIG_ERROR';
+export interface AdapterCapability {
+  lifecycleStage: AdapterLifecycleStage;
+  requiresCertifiedElectrician: boolean;
+  supportsBiDirectionalControl: boolean; // Always FALSE for passive residential safety
+  isPassiveReadOnly: boolean;            // Always TRUE
+  physicalHardwareAttached: boolean;
+  physicalHardwareEvidence?: string;
+  supportedTransports: ('SERIAL_OPTICAL' | 'MQTT_TLS' | 'REST_HTTP' | 'SMART_PLUG_API' | 'MANUAL_ENTRY')[];
 }
 
 export interface IRuntimeAdapter {
   readonly adapterId: string;
-  readonly adapterType: string;
-  
+  readonly adapterType: IntegrationPathway;
+  readonly capability: AdapterCapability;
+
   initialize(config: Record<string, any>): Promise<void>;
-  connect(): Promise<boolean>;
+  connect(): Promise<{ success: boolean; state: AdapterConnectionState; message: string }>;
   disconnect(): Promise<void>;
   onData(callback: (measurement: NormalizedEnergyMeasurement) => void): void;
   onError(callback: (error: Error) => void): void;
   getHealth(): AdapterHealth;
 }
 ```
+
+### 2.3 Physical Connection Honesty Guarantee
+- `SmartMeterAdapter.connect()` checks for physical serial port existence. In sandbox and cloud environments without an attached physical USB optical probe, it transitions to `PARSER_ONLY_NO_HARDWARE` and explicitly reports that physical hardware is not connected.
+- `LocalGatewayAdapter` sets `requiresCertifiedElectrician: true` because connecting split-core current transformers inside main distribution boards involves live 230V/400V busbars and must be performed by certified licensed personnel under Turkish Electrical Internal Facilities Regulations.
 
 ---
 

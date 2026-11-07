@@ -1,4 +1,4 @@
-import { IRuntimeAdapter, AdapterHealth } from './IRuntimeAdapter';
+import { IRuntimeAdapter, AdapterHealth, AdapterCapability, AdapterConnectionState } from './IRuntimeAdapter';
 import { NormalizedEnergyMeasurement, IntegrationPathway, ManualBillRecord } from '../../types/residential';
 import { EnergyDataNormalizer } from '../integration/EnergyDataNormalizer';
 
@@ -6,10 +6,20 @@ export class ManualConsumptionAdapter implements IRuntimeAdapter {
   public readonly adapterId: string;
   public readonly adapterType: IntegrationPathway = 'MANUAL_INVOICE';
 
+  public readonly capability: AdapterCapability = {
+    lifecycleStage: 'STAGE_4_PRODUCTION_ACCEPTED', // Manual invoice entry is fully functional and accepted
+    requiresCertifiedElectrician: false,
+    supportsBiDirectionalControl: false,
+    isPassiveReadOnly: true,
+    physicalHardwareAttached: false,
+    physicalHardwareEvidence: 'Manual paper/PDF bill entry. No IoT hardware required.',
+    supportedTransports: ['MANUAL_ENTRY'],
+  };
+
   private tenantId: string = '';
   private homeId: string = '';
   private deviceId: string = '';
-  private isConnected: boolean = true;
+  private connectionState: AdapterConnectionState = 'PROTOCOL_READY';
   private records: ManualBillRecord[] = [];
   private dataCallback: ((m: NormalizedEnergyMeasurement) => void) | null = null;
   private errorCallback: ((err: Error) => void) | null = null;
@@ -24,13 +34,17 @@ export class ManualConsumptionAdapter implements IRuntimeAdapter {
     this.deviceId = config.deviceId || 'dev-manual-bill';
   }
 
-  public async connect(): Promise<boolean> {
-    this.isConnected = true;
-    return true;
+  public async connect(): Promise<{ success: boolean; state: AdapterConnectionState; message: string }> {
+    this.connectionState = 'PROTOCOL_READY';
+    return {
+      success: true,
+      state: 'PROTOCOL_READY',
+      message: 'Manual billing ingestion ready.',
+    };
   }
 
   public async disconnect(): Promise<void> {
-    this.isConnected = false;
+    this.connectionState = 'DISCONNECTED';
   }
 
   public onData(callback: (measurement: NormalizedEnergyMeasurement) => void): void {
@@ -43,13 +57,16 @@ export class ManualConsumptionAdapter implements IRuntimeAdapter {
 
   public getHealth(): AdapterHealth {
     return {
-      connected: true,
+      connected: this.connectionState === 'PROTOCOL_READY',
+      connectionState: this.connectionState,
+      hardwareAttached: false,
       status: 'ONLINE',
       latencyMs: 0,
       packetsReceived: this.records.length,
       packetErrors: 0,
       errorRatePercent: 0,
       lastHeartbeat: new Date().toISOString(),
+      diagnosticMessage: 'Manual invoice ledger ready. Invoices classified as MANUAL_BILL quality.',
     };
   }
 
@@ -62,7 +79,6 @@ export class ManualConsumptionAdapter implements IRuntimeAdapter {
     };
     this.records.push(billRecord);
 
-    // Calculate daily average power in Watts equivalent over billing period days
     const start = new Date(billInput.periodStart).getTime();
     const end = new Date(billInput.periodEnd).getTime();
     const days = Math.max(1, Math.round((end - start) / (1000 * 60 * 60 * 24)));
