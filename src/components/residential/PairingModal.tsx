@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, Key, ShieldCheck, CheckCircle2, Clock, Radio, ArrowRight, AlertTriangle } from 'lucide-react';
 import { IntegrationPathway, DeviceRecord, PairingToken } from '../../types/residential';
-import { pairingServiceInstance } from '../../services/integration/PairingService';
+import { aetherApiClientInstance } from '../../services/api/aetherApiClient';
 
 interface PairingModalProps {
   isOpen: boolean;
@@ -34,7 +34,7 @@ export const PairingModal: React.FC<PairingModalProps> = ({
   useEffect(() => {
     if (isOpen) {
       // Generate new pairing token immediately
-      const token = pairingServiceInstance.generatePairingToken(
+      const token = aetherApiClientInstance.generatePairingToken(
         tenantId,
         homeId,
         deviceType,
@@ -69,7 +69,7 @@ export const PairingModal: React.FC<PairingModalProps> = ({
     setErrorMessage('');
 
     setTimeout(() => {
-      const result = pairingServiceInstance.redeemPairingToken(tenantId, pairingToken.token, {
+      const result = aetherApiClientInstance.redeemPairingToken(tenantId, pairingToken.token, {
         name: deviceName,
         manufacturer,
         serialNumber: serialNumber || `SN-${pairingToken.token}`,

@@ -10,8 +10,7 @@ import {
   Clock
 } from 'lucide-react';
 import { TenantContext } from '../../types/saas';
-import { dataPrivacyServiceInstance } from '../../services/saas/DataPrivacyService';
-import { auditLogServiceInstance } from '../../services/saas/AuditLogService';
+import { aetherApiClientInstance } from '../../services/api/aetherApiClient';
 
 interface PrivacySecurityProps {
   context: TenantContext;
@@ -22,10 +21,10 @@ export const PrivacySecurityView: React.FC<PrivacySecurityProps> = ({ context })
   const [purgeMessage, setPurgeMessage] = useState('');
   const [exportSuccess, setExportSuccess] = useState(false);
 
-  const logs = auditLogServiceInstance.listLogs(context.tenantId, 15);
+  const logs = aetherApiClientInstance.listAuditLogs(context.tenantId, 15);
 
   const handleExportData = () => {
-    const data = dataPrivacyServiceInstance.exportTenantData(context);
+    const data = aetherApiClientInstance.exportTenantData(context);
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -39,7 +38,7 @@ export const PrivacySecurityView: React.FC<PrivacySecurityProps> = ({ context })
 
   const handlePurge = () => {
     try {
-      const result = dataPrivacyServiceInstance.purgeTenantData(context, deleteConfirmation);
+      const result = aetherApiClientInstance.purgeTenantData(context, deleteConfirmation);
       setPurgeMessage(result.message);
     } catch (err: any) {
       alert(err.message);

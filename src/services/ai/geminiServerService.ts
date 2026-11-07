@@ -19,11 +19,16 @@ export interface DecisionEngineResult {
   };
 }
 
+interface TenantCircuitState {
+  consecutiveFailures: number;
+  circuitOpenUntil: number;
+}
+
 export class GeminiServerService {
   private genAiClient: GoogleGenAI | null = null;
-  private consecutiveFailures: number = 0;
   private readonly maxFailuresBeforeCircuitTrip: number = 3;
-  private circuitOpenUntil: number = 0;
+  // Per-tenant circuit breaker state isolation (MED-AI-11)
+  private tenantCircuits: Map<string, TenantCircuitState> = new Map();
 
   constructor() {
     this.initClient();
@@ -48,12 +53,28 @@ export class GeminiServerService {
     return !!this.genAiClient;
   }
 
-  public isCircuitBreakerOpen(): boolean {
-    return this.circuitOpenUntil > Date.now();
+  private getTenantCircuit(tenantId: string): TenantCircuitState {
+    let state = this.tenantCircuits.get(tenantId);
+    if (!state) {
+      state = { consecutiveFailures: 0, circuitOpenUntil: 0 };
+      this.tenantCircuits.set(tenantId, state);
+    }
+    return state;
+  }
+
+  public isCircuitBreakerOpen(tenantId: string = 'default'): boolean {
+    const circuit = this.getTenantCircuit(tenantId);
+    return circuit.circuitOpenUntil > Date.now();
+  }
+
+  public resetCircuitBreaker(tenantId: string): void {
+    const circuit = this.getTenantCircuit(tenantId);
+    circuit.consecutiveFailures = 0;
+    circuit.circuitOpenUntil = 0;
   }
 
   /**
-   * Generates structured energy optimization decisions with fallback & circuit breaker
+   * Generates structured energy optimization decisions with fallback & per-tenant circuit breaker
    */
   public async generateDecisions(
     tenantId: string,
@@ -62,6 +83,7 @@ export class GeminiServerService {
   ): Promise<DecisionEngineResult> {
     const start = Date.now();
     const now = Date.now();
+    const circuit = this.getTenantCircuit(tenantId);
 
     const provenance = {
       telemetryTimestamp: telemetry.timestamp,
@@ -71,8 +93,8 @@ export class GeminiServerService {
       scenarioApplied: activeScenario?.name || null,
     };
 
-    // 1. Check Circuit Breaker
-    if (this.circuitOpenUntil > now) {
+    // 1. Check Per-Tenant Circuit Breaker
+    if (circuit.circuitOpenUntil > now) {
       const fallback = generateHeuristicDecisions(telemetry, activeScenario);
       return {
         decisions: fallback,
@@ -87,7 +109,7 @@ export class GeminiServerService {
     if (this.genAiClient) {
       try {
         const decisions = await this.callGeminiWithRetry(telemetry, activeScenario);
-        this.consecutiveFailures = 0;
+        circuit.consecutiveFailures = 0;
 
         // Record immutable audit log
         auditLogServiceInstance.record({
@@ -108,11 +130,11 @@ export class GeminiServerService {
           provenance,
         };
       } catch (err) {
-        this.consecutiveFailures++;
-        if (this.consecutiveFailures >= this.maxFailuresBeforeCircuitTrip) {
-          this.circuitOpenUntil = now + 60 * 1000; // Trip circuit breaker for 60 seconds
+        circuit.consecutiveFailures++;
+        if (circuit.consecutiveFailures >= this.maxFailuresBeforeCircuitTrip) {
+          circuit.circuitOpenUntil = now + 60 * 1000; // Trip circuit breaker for 60 seconds
         }
-        console.warn('Gemini API call failed, invoking deterministic rule engine:', err);
+        console.warn(`Gemini API call failed for tenant ${tenantId}, invoking deterministic rule engine:`, err);
       }
     }
 
@@ -151,63 +173,64 @@ export class GeminiServerService {
           return parsed.map((d, idx) => ({
             ...d,
             id: d.id || `gemini-dec-${Date.now()}-${idx}`,
-            timestamp: d.timestamp || new Date().toISOString(),
-            source: 'GEMINI_AI' as const,
-            status: 'PENDING_APPROVAL' as const,
+            timestamp: new Date().toISOString(),
+            source: 'GEMINI_AI',
+            status: 'PENDING_APPROVAL',
           }));
         }
-        throw new Error('Failed to parse structured JSON array from Gemini response');
+        throw new Error('Gemini model response did not contain a valid JSON array');
       } catch (err) {
         lastError = err;
         if (attempt < maxRetries) {
-          // Exponential backoff
-          await new Promise(r => setTimeout(r, (attempt + 1) * 600));
+          await new Promise((res) => setTimeout(res, 500 * Math.pow(2, attempt)));
         }
       }
     }
     throw lastError;
   }
 
-  private buildStructuredPrompt(telemetry: TelemetryPoint, activeScenario: StressScenario | null): string {
+  private buildStructuredPrompt(
+    telemetry: TelemetryPoint,
+    activeScenario: StressScenario | null
+  ): string {
     return `
-You are the core AI Decision Engine for AETHER Autonomous Residential Energy & Carbon Neural System.
-Analyze this live telemetry and generate 1 to 3 structured optimization decisions in pure JSON array format:
+You are the AETHER Energy & Carbon Neural Intelligence Engine.
+Analyze this high-frequency residential smart meter telemetry and produce JSON optimization decisions.
 
-TELEMETRY INPUTS:
-- Active Power: ${telemetry.activePowerKw} kW | Voltage: ${telemetry.voltage} V | Frequency: ${telemetry.frequency} Hz | PF: ${telemetry.powerFactor}
-- Disaggregated NILM:
-  * HVAC: ${telemetry.nilm.hvacKw} kW
-  * Lighting: ${telemetry.nilm.lightingKw} kW
-  * Base Load: ${telemetry.nilm.baseLoadKw} kW
-  * Phantom Leakage: ${telemetry.nilm.phantomLoadKw} kW
-  * Industrial/Pumps: ${telemetry.nilm.industrialLoadKw} kW
-  * Solar PV Generation: ${telemetry.nilm.solarGenerationKw} kW
-- Environment: Outdoor Temp ${telemetry.outdoorTempC} C, Solar ${telemetry.solarIrradianceWm2} W/m2, Occupancy ${telemetry.occupancyRatePercent}%
-- Grid: Carbon Intensity ${telemetry.gridCarbonIntensityGCo2PerKwh} gCO2/kWh, Electricity Tariff ${telemetry.gridElectricityPriceTryPerKwh} TL/kWh
-${activeScenario ? `ACTIVE STRESS SCENARIO: ${activeScenario.name} (${activeScenario.category})` : ''}
+Current Telemetry:
+- Active Power: ${telemetry.activePowerKw} kW
+- Grid Voltage: ${telemetry.voltage} V
+- Frequency: ${telemetry.frequency} Hz
+- Power Factor: ${telemetry.powerFactor}
+- Current Electricity Price: ${telemetry.gridElectricityPriceTryPerKwh} TRY/kWh
+- Grid Carbon Intensity: ${telemetry.gridCarbonIntensityGCo2PerKwh} gCO2/kWh
+- NILM Phantom Load: ${telemetry.nilm.phantomLoadKw} kW
+- HVAC Load: ${telemetry.nilm.hvacKw} kW
+- Lighting Load: ${telemetry.nilm.lightingKw} kW
+- Active Scenario: ${activeScenario ? `${activeScenario.name} (${activeScenario.category})` : 'Normal Operations'}
 
-OUTPUT STRICT JSON SCHEMA:
+Return a valid JSON array of AIDecision objects conforming to this schema:
 [
   {
     "id": "gemini-${Date.now()}",
     "timestamp": "${new Date().toISOString()}",
-    "anomalyType": "PHANTOM_LOAD" | "PEAK_SURGE" | "SOLAR_DIP" | "GRID_CARBON_HIGH",
-    "priority": "CRITICAL" | "HIGH" | "MEDIUM",
-    "title": "Short title",
-    "diagnosis": "Root cause diagnosis",
-    "recommendedAction": "Concrete mitigation action",
+    "anomalyType": "PHANTOM_LOAD" | "PEAK_SURGE" | "GRID_CARBON_HIGH" | "SOLAR_DIP" | "EFFICIENCY_OPPORTUNITY",
+    "priority": "CRITICAL" | "HIGH" | "MEDIUM" | "LOW",
+    "title": "Short descriptive title in Turkish",
+    "diagnosis": "Technical explanation in Turkish",
+    "recommendedAction": "Concrete automated action in Turkish",
     "commandPayload": {
-      "subsystem": "HVAC" | "LIGHTING" | "PUMP_CONTROL" | "LOAD_SHEDDING",
-      "action": "ACTION_CODE",
-      "parameters": { "param": 1 },
-      "estimatedKwReduction": 12.0
+      "subsystem": "HVAC" | "EV_CHARGER" | "BATTERY" | "LOAD_SHEDDING",
+      "action": "STRING",
+      "parameters": {}
     },
-    "projectedKwhSaving": 36.0,
-    "projectedCo2ReductionKg": 16.5,
-    "projectedCostSavingTry": 150.0,
-    "confidenceScore": 95,
+    "projectedKwhSaving": number,
+    "projectedCo2ReductionKg": number,
+    "projectedCostSavingTry": number,
+    "confidenceScore": number (0-100),
     "status": "PENDING_APPROVAL",
-    "source": "GEMINI_AI"
+    "source": "GEMINI_AI",
+    "reasoningNotes": ["string"]
   }
 ]
 `;

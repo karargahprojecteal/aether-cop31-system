@@ -4,6 +4,8 @@ import { AIDecision } from '../../types/decisions';
 import { geminiServerServiceInstance } from './geminiServerService';
 import { subscriptionServiceInstance } from '../saas/SubscriptionService';
 import { generateHeuristicDecisions } from './fallbackRuleEngine';
+import { verifyJwtToken } from '../auth/jwtVerifier';
+import { TenantRepository } from '../persistence/TenantRepository';
 
 export interface AiDecisionRequest {
   tenantId: string;
@@ -20,26 +22,94 @@ export interface AiDecisionResponse {
   circuitBreakerTripped: boolean;
   quotaRemaining?: boolean;
   error?: string;
+  statusCode?: number;
 }
 
 /**
  * Server-Side AI Gateway Endpoint Handler.
  * Executes on Node.js/Vercel serverless function or backend worker.
- * Keeps GEMINI_API_KEY strictly in server memory, enforces tenant quotas,
- * and validates telemetry schema constraints.
+ * Strictly verifies JWT bearer token, checks tenant membership server-side,
+ * prevents cross-tenant quota depletion, and validates telemetry schema constraints.
  */
-export async function handleAiDecisionEndpoint(request: AiDecisionRequest): Promise<AiDecisionResponse> {
+export async function handleAiDecisionEndpoint(
+  request: AiDecisionRequest,
+  authHeader?: string,
+  tenantRepo?: TenantRepository
+): Promise<AiDecisionResponse> {
   const start = Date.now();
 
-  // 1. Validate Input Payload Schema
-  if (!request.tenantId || !request.userId || !request.telemetry) {
+  // 1. Authenticate Request via Cryptographic JWT
+  if (!authHeader || typeof authHeader !== 'string') {
     return {
       success: false,
       decisions: [],
       executionTimeMs: Date.now() - start,
       source: 'DETERMINISTIC_FALLBACK',
       circuitBreakerTripped: false,
-      error: 'Invalid request: tenantId, userId, and telemetry payload are required.',
+      statusCode: 401,
+      error: '401 Unauthorized: Authorization Bearer token is required.',
+    };
+  }
+
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : authHeader.trim();
+  const tokenResult = verifyJwtToken(token);
+
+  if (!tokenResult.valid || !tokenResult.claims) {
+    return {
+      success: false,
+      decisions: [],
+      executionTimeMs: Date.now() - start,
+      source: 'DETERMINISTIC_FALLBACK',
+      circuitBreakerTripped: false,
+      statusCode: 401,
+      error: `401 Unauthorized: ${tokenResult.error || 'Invalid authentication token'}`,
+    };
+  }
+
+  const authenticatedClaims = tokenResult.claims;
+  const verifiedTenantId = authenticatedClaims.tenantId;
+  const verifiedUserId = authenticatedClaims.sub;
+
+  // 2. Reject Cross-Tenant Identity Spoofing
+  // An attacker cannot supply another tenant's ID in request body
+  if (request.tenantId && request.tenantId !== verifiedTenantId) {
+    return {
+      success: false,
+      decisions: [],
+      executionTimeMs: Date.now() - start,
+      source: 'DETERMINISTIC_FALLBACK',
+      circuitBreakerTripped: false,
+      statusCode: 403,
+      error: `403 Forbidden: Security Boundary Violation. Token is bound to '${verifiedTenantId}', but requested tenant was '${request.tenantId}'.`,
+    };
+  }
+
+  // 3. Verify Server-Side Organization Membership
+  if (tenantRepo) {
+    const member = tenantRepo.getMember(verifiedTenantId, verifiedUserId);
+    if (!member) {
+      return {
+        success: false,
+        decisions: [],
+        executionTimeMs: Date.now() - start,
+        source: 'DETERMINISTIC_FALLBACK',
+        circuitBreakerTripped: false,
+        statusCode: 403,
+        error: `403 Forbidden: User '${verifiedUserId}' is not an active member of organization '${verifiedTenantId}'.`,
+      };
+    }
+  }
+
+  // 4. Validate Input Payload Schema
+  if (!request.telemetry) {
+    return {
+      success: false,
+      decisions: [],
+      executionTimeMs: Date.now() - start,
+      source: 'DETERMINISTIC_FALLBACK',
+      circuitBreakerTripped: false,
+      statusCode: 400,
+      error: 'Schema violation: telemetry payload is required.',
     };
   }
 
@@ -51,12 +121,13 @@ export async function handleAiDecisionEndpoint(request: AiDecisionRequest): Prom
       executionTimeMs: Date.now() - start,
       source: 'DETERMINISTIC_FALLBACK',
       circuitBreakerTripped: false,
+      statusCode: 400,
       error: 'Schema violation: telemetry numerical properties are invalid or out of range.',
     };
   }
 
-  // 2. Enforce Tenant AI Quota Server-Side
-  const hasQuota = subscriptionServiceInstance.consumeGeminiQuota(request.tenantId);
+  // 5. Enforce Tenant AI Quota Server-Side (strictly on the verified tenant)
+  const hasQuota = subscriptionServiceInstance.consumeGeminiQuota(verifiedTenantId);
   if (!hasQuota) {
     // Quota exhausted: gracefully fallback to deterministic physics engine
     const fallbackDecisions = generateHeuristicDecisions(request.telemetry, request.scenario || null);
@@ -67,14 +138,15 @@ export async function handleAiDecisionEndpoint(request: AiDecisionRequest): Prom
       source: 'DETERMINISTIC_FALLBACK',
       circuitBreakerTripped: false,
       quotaRemaining: false,
+      statusCode: 200,
       error: 'Tenant daily AI call quota exceeded. Running deterministic rule engine.',
     };
   }
 
-  // 3. Delegate to server service (which accesses process.env.GEMINI_API_KEY)
+  // 6. Delegate to server service (which accesses process.env.GEMINI_API_KEY)
   try {
     const result = await geminiServerServiceInstance.generateDecisions(
-      request.tenantId,
+      verifiedTenantId,
       request.telemetry,
       request.scenario || null
     );
@@ -86,6 +158,7 @@ export async function handleAiDecisionEndpoint(request: AiDecisionRequest): Prom
       source: result.source,
       circuitBreakerTripped: result.circuitBreakerTripped,
       quotaRemaining: true,
+      statusCode: 200,
     };
   } catch (err: any) {
     // In case of unexpected server failure, fallback deterministically
@@ -97,6 +170,7 @@ export async function handleAiDecisionEndpoint(request: AiDecisionRequest): Prom
       source: 'DETERMINISTIC_FALLBACK',
       circuitBreakerTripped: true,
       quotaRemaining: true,
+      statusCode: 200,
       error: err.message,
     };
   }

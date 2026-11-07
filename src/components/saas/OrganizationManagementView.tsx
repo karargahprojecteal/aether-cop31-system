@@ -11,7 +11,7 @@ import {
   X 
 } from 'lucide-react';
 import { OrganizationMember, UserRole, TenantContext } from '../../types/saas';
-import { tenantManagerInstance } from '../../services/saas/TenantManager';
+import { aetherApiClientInstance } from '../../services/api/aetherApiClient';
 
 interface OrgManagementProps {
   context: TenantContext;
@@ -19,10 +19,10 @@ interface OrgManagementProps {
 
 export const OrganizationManagementView: React.FC<OrgManagementProps> = ({ context }) => {
   const [members, setMembers] = useState<OrganizationMember[]>(() =>
-    tenantManagerInstance.listMembers(context)
+    aetherApiClientInstance.listMembers(context)
   );
   const [org, setOrg] = useState(() =>
-    tenantManagerInstance.getOrganization(context.tenantId)
+    aetherApiClientInstance.getOrganization(context.tenantId)
   );
 
   const [newEmail, setNewEmail] = useState('');
@@ -34,7 +34,7 @@ export const OrganizationManagementView: React.FC<OrgManagementProps> = ({ conte
     e.preventDefault();
     if (!newEmail.trim() || !newName.trim()) return;
 
-    const invited = tenantManagerInstance.addMember(context, {
+    const invited = aetherApiClientInstance.addMember(context, {
       tenantId: context.tenantId,
       userId: `user-${Date.now()}`,
       name: newName,

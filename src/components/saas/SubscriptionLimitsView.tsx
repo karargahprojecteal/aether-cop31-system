@@ -10,9 +10,7 @@ import {
   ArrowRight
 } from 'lucide-react';
 import { SubscriptionTier, TenantContext } from '../../types/saas';
-import { subscriptionServiceInstance } from '../../services/saas/SubscriptionService';
-import { tenantManagerInstance } from '../../services/saas/TenantManager';
-import { deviceRegistryInstance } from '../../services/integration/DeviceRegistry';
+import { aetherApiClientInstance } from '../../services/api/aetherApiClient';
 
 interface SubscriptionProps {
   context: TenantContext;
@@ -20,17 +18,17 @@ interface SubscriptionProps {
 
 export const SubscriptionLimitsView: React.FC<SubscriptionProps> = ({ context }) => {
   const [org, setOrg] = useState(() =>
-    tenantManagerInstance.getOrganization(context.tenantId)
+    aetherApiClientInstance.getOrganization(context.tenantId)
   );
 
-  const homes = tenantManagerInstance.listHomes(context);
-  const totalDevices = homes.reduce((acc, h) => acc + deviceRegistryInstance.countDevices(context.tenantId, h.id), 0);
+  const homes = aetherApiClientInstance.listHomes(context);
+  const totalDevices = homes.reduce((acc, h) => acc + aetherApiClientInstance.countDevices(context.tenantId, h.id), 0);
 
-  const plan = org?.plan || subscriptionServiceInstance.getPlanTiers().STARTER_HOME;
+  const plan = org?.plan || aetherApiClientInstance.getSubscription(context.tenantId);
 
   const handleUpgrade = (tier: SubscriptionTier) => {
-    subscriptionServiceInstance.upgradeTier(context.tenantId, tier);
-    setOrg(tenantManagerInstance.getOrganization(context.tenantId));
+    aetherApiClientInstance.upgradeSubscription(context.tenantId, tier);
+    setOrg(aetherApiClientInstance.getOrganization(context.tenantId));
   };
 
   const tiers: {

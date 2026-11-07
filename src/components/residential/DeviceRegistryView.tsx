@@ -11,7 +11,7 @@ import {
   RefreshCw 
 } from 'lucide-react';
 import { DeviceRecord } from '../../types/residential';
-import { deviceRegistryInstance } from '../../services/integration/DeviceRegistry';
+import { aetherApiClientInstance } from '../../services/api/aetherApiClient';
 import { connectionHealthMonitorInstance } from '../../services/integration/ConnectionHealthMonitor';
 
 interface DeviceRegistryViewProps {
@@ -26,15 +26,15 @@ export const DeviceRegistryView: React.FC<DeviceRegistryViewProps> = ({
   onOpenPairing,
 }) => {
   const [devices, setDevices] = useState<DeviceRecord[]>(() =>
-    deviceRegistryInstance.listDevicesForHome(tenantId, homeId)
+    aetherApiClientInstance.listDevices(tenantId, homeId)
   );
 
   const refreshList = () => {
-    setDevices(deviceRegistryInstance.listDevicesForHome(tenantId, homeId));
+    setDevices(aetherApiClientInstance.listDevices(tenantId, homeId));
   };
 
   const handleRevoke = (deviceId: string) => {
-    deviceRegistryInstance.revokeDevice(tenantId, deviceId);
+    aetherApiClientInstance.revokeDevice(tenantId, deviceId);
     refreshList();
   };
 

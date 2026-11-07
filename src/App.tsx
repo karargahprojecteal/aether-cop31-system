@@ -24,7 +24,7 @@ import { OrganizationManagementView } from './components/saas/OrganizationManage
 import { SubscriptionLimitsView } from './components/saas/SubscriptionLimitsView';
 import { PrivacySecurityView } from './components/saas/PrivacySecurityView';
 
-import { tenantManagerInstance } from './services/saas/TenantManager';
+import { aetherApiClientInstance } from './services/api/aetherApiClient';
 import { HomeProfile, IntegrationPathway, DeviceRecord } from './types/residential';
 import { TenantContext } from './types/saas';
 
@@ -60,7 +60,7 @@ const MainLayout: React.FC = () => {
   });
 
   const [homes, setHomes] = useState<HomeProfile[]>(() =>
-    tenantManagerInstance.listHomes(tenantContext)
+    aetherApiClientInstance.listHomes(tenantContext)
   );
 
   const [activeHome, setActiveHome] = useState<HomeProfile | null>(() =>
@@ -68,8 +68,8 @@ const MainLayout: React.FC = () => {
   );
 
   const handleCreateHome = (homeData: Omit<HomeProfile, 'id' | 'createdAt'>) => {
-    const created = tenantManagerInstance.createHome(tenantContext, homeData);
-    const updatedHomes = tenantManagerInstance.listHomes(tenantContext);
+    const created = aetherApiClientInstance.createHome(tenantContext, homeData);
+    const updatedHomes = aetherApiClientInstance.listHomes(tenantContext);
     setHomes(updatedHomes);
     setActiveHome(created);
     setActiveTab('device-registry');

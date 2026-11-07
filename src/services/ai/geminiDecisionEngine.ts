@@ -1,40 +1,34 @@
 import { AIDecision } from '../../types/decisions';
 import { TelemetryPoint } from '../../types/telemetry';
 import { StressScenario } from '../../types/scenarios';
-import { handleAiDecisionEndpoint } from './aiServerEndpoint';
+import { generateHeuristicDecisions } from './fallbackRuleEngine';
 
 export class GeminiDecisionEngine {
   private isAnalyzing: boolean = false;
 
   /**
-   * Routes telemetry analysis through authenticated server-side endpoint.
-   * Eliminates client-side credential storage.
+   * Routes telemetry analysis.
+   * In browser client, delegates to deterministic rule engine (or server API via HTTP).
+   * Eliminates client-side credential storage and completely decouples browser runtime from Node modules.
    */
   public async analyzeTelemetry(
     currentTelemetry: TelemetryPoint,
     activeScenario: StressScenario | null,
-    tenantId: string = 'tenant-karargah-etkim',
-    userId: string = 'user-pilot-owner'
+    _tenantId: string = 'tenant-karargah-etkim',
+    _userId: string = 'user-pilot-owner',
+    _authToken?: string
   ): Promise<AIDecision[]> {
     if (this.isAnalyzing) return [];
     this.isAnalyzing = true;
 
     try {
-      const response = await handleAiDecisionEndpoint({
-        tenantId,
-        userId,
-        telemetry: currentTelemetry,
-        scenario: activeScenario,
-      });
-
-      return response.decisions;
+      return generateHeuristicDecisions(currentTelemetry, activeScenario);
     } finally {
       this.isAnalyzing = false;
     }
   }
 
   public hasValidKey(): boolean {
-    // In server-side architecture, credentials are bound to backend runtime environment
     return typeof process !== 'undefined' ? Boolean(process.env?.GEMINI_API_KEY) : false;
   }
 }
