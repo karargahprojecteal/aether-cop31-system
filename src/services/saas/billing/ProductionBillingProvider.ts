@@ -1,7 +1,16 @@
 import * as crypto from 'node:crypto';
 import { IBillingProvider, WebhookVerificationResult } from './IBillingProvider';
-import { SubscriptionTier } from '../../../types/saas';
+import { SubscriptionPlan, SubscriptionTier } from '../../../types/saas';
 import { SubscriptionRepository } from '../../persistence/SubscriptionRepository';
+
+export interface ProcessWebhookOptions {
+  rawPayload: string;
+  signatureHeader: string;
+  secret: string;
+  eventTimestamp: string;
+  newPlan?: SubscriptionPlan;
+  customerTenantMapping?: Record<string, string>;
+}
 
 export class ProductionBillingProvider implements IBillingProvider {
   private subscriptionRepo: SubscriptionRepository;
@@ -60,9 +69,15 @@ export class ProductionBillingProvider implements IBillingProvider {
   }
 
   /**
-   * Detailed webhook verification with idempotency recording and replay rejection
+   * Detailed webhook verification with idempotency recording and replay rejection.
+   * Enforces customer ID to tenant ID verification when mapping is provided.
    */
-  public verifyWebhookDetailed(rawPayload: string, signatureHeader: string, secret: string): WebhookVerificationResult {
+  public verifyWebhookDetailed(
+    rawPayload: string,
+    signatureHeader: string,
+    secret: string,
+    customerTenantMapping?: Record<string, string>
+  ): WebhookVerificationResult {
     const isValid = this.verifyWebhook(rawPayload, signatureHeader, secret);
     if (!isValid) {
       return { valid: false, isReplay: false, error: 'Invalid HMAC signature or expired timestamp' };
@@ -75,7 +90,29 @@ export class ProductionBillingProvider implements IBillingProvider {
         return { valid: false, isReplay: false, error: 'Malformed webhook: Missing required event id' };
       }
       const eventType = parsedPayload.type || parsedPayload.event || 'unknown';
-      const tenantId = parsedPayload.data?.tenantId || parsedPayload.tenantId || null;
+      let tenantId = parsedPayload.data?.tenantId || parsedPayload.tenantId || null;
+      const customerId = parsedPayload.data?.customerId || parsedPayload.customerId || null;
+
+      // Cross-Tenant Injection Protection:
+      // Verify customer ID mapping against trusted server mapping
+      if (customerTenantMapping && customerId) {
+        const mappedTenantId = customerTenantMapping[customerId];
+        if (!mappedTenantId) {
+          return {
+            valid: false,
+            isReplay: false,
+            error: `Cross-tenant violation: Unknown Stripe customerId '${customerId}' has no mapped organization tenant.`,
+          };
+        }
+        if (tenantId && tenantId !== mappedTenantId) {
+          return {
+            valid: false,
+            isReplay: false,
+            error: `Cross-tenant injection blocked: Payload specified tenantId '${tenantId}', but customerId '${customerId}' is bound to '${mappedTenantId}'.`,
+          };
+        }
+        tenantId = mappedTenantId;
+      }
 
       const idempResult = this.subscriptionRepo.processWebhookIdempotent(
         'stripe',
@@ -96,6 +133,78 @@ export class ProductionBillingProvider implements IBillingProvider {
         eventType,
         tenantId,
         payload: parsedPayload,
+      };
+    } catch (err: any) {
+      return { valid: false, isReplay: false, error: err.message };
+    }
+  }
+
+  /**
+   * Atomically processes incoming webhook, verifies signatures, checks idempotency,
+   * prevents cross-tenant spoofing, guards against out-of-order state regression,
+   * and updates subscription in a single transaction boundary.
+   */
+  public processWebhookAndApply(
+    options: ProcessWebhookOptions
+  ): WebhookVerificationResult & { applied?: boolean; isStale?: boolean } {
+    const isValid = this.verifyWebhook(options.rawPayload, options.signatureHeader, options.secret);
+    if (!isValid) {
+      return { valid: false, isReplay: false, error: 'Invalid HMAC signature or expired timestamp' };
+    }
+
+    try {
+      const parsedPayload = JSON.parse(options.rawPayload);
+      const eventId = parsedPayload.id;
+      if (!eventId || typeof eventId !== 'string' || !eventId.trim()) {
+        return { valid: false, isReplay: false, error: 'Malformed webhook: Missing required event id' };
+      }
+      const eventType = parsedPayload.type || parsedPayload.event || 'unknown';
+      let tenantId = parsedPayload.data?.tenantId || parsedPayload.tenantId || null;
+      const customerId = parsedPayload.data?.customerId || parsedPayload.customerId || null;
+
+      if (options.customerTenantMapping && customerId) {
+        const mappedTenantId = options.customerTenantMapping[customerId];
+        if (!mappedTenantId) {
+          return {
+            valid: false,
+            isReplay: false,
+            error: `Cross-tenant violation: Unknown customerId '${customerId}'.`,
+          };
+        }
+        if (tenantId && tenantId !== mappedTenantId) {
+          return {
+            valid: false,
+            isReplay: false,
+            error: `Cross-tenant injection blocked: customerId '${customerId}' does not match tenantId '${tenantId}'.`,
+          };
+        }
+        tenantId = mappedTenantId;
+      }
+
+      if (!tenantId) {
+        return { valid: false, isReplay: false, error: 'Missing tenantId in webhook payload' };
+      }
+
+      const result = this.subscriptionRepo.processWebhookAndApplySubscription({
+        provider: 'stripe',
+        eventId,
+        tenantId,
+        eventType,
+        eventTimestamp: options.eventTimestamp,
+        payload: parsedPayload,
+        newPlan: options.newPlan,
+      });
+
+      return {
+        valid: result.success,
+        isReplay: result.isReplay,
+        isStale: result.isStale,
+        eventId,
+        eventType,
+        tenantId,
+        payload: parsedPayload,
+        applied: result.success && !!options.newPlan,
+        error: result.error,
       };
     } catch (err: any) {
       return { valid: false, isReplay: false, error: err.message };
