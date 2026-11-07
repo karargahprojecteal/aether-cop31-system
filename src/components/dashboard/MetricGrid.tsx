@@ -1,13 +1,10 @@
 import React from 'react';
 import { 
   Zap, 
-  TrendingDown, 
   Leaf, 
   Gauge, 
   DollarSign, 
-  ShieldCheck, 
   Ghost,
-  ArrowUpRight,
   ArrowDownRight
 } from 'lucide-react';
 import { useTelemetry } from '../../context/TelemetryContext';
