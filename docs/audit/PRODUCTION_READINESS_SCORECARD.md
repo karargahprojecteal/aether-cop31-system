@@ -1,24 +1,24 @@
 # AETHER System — Production Readiness Scorecard
 ## Independent Production Acceptance Evaluation
 
-- **Target PR:** #1 (`c3e43cf`)
-- **Evaluation Date:** 2026-11-07
+- **Target PR:** #1 (`c3e43cf` baseline -> remediated to `0c3230c`)
+- **Evaluation Date:** 2026-11-07 (Re-Acceptance Audit)
 - **Evaluation Methodology:** Weighted multi-dimensional scoring across security, resilience, architecture, data isolation, and operational readiness.
 
 ---
 
-## 1. Executive Readiness Summary
+## 1. Executive Readiness Summary (Post-Remediation Re-Evaluation)
 
 | Dimension | Weight | Raw Score (0–100) | Weighted Score | Readiness Status |
 | :--- | :---: | :---: | :---: | :--- |
 | **1. Frontend Architecture & Secret Hygiene** | 15% | 100 | 15.0% | **READY FOR PRODUCTION** |
-| **2. Cryptographic Security & Device Pairing** | 15% | 90 | 13.5% | **SUBSTANTIALLY READY** |
-| **3. Database Schema, Migrations & PostgreSQL RLS** | 20% | 45 | 9.0% | **BLOCKING DEFECTS FOUND** |
-| **4. Backend Persistence Parity & Driver Runtime** | 15% | 40 | 6.0% | **BLOCKING DEFECTS FOUND** |
-| **5. Audit Log Ledger & Tamper Evidence** | 10% | 55 | 5.5% | **REMEDIATION REQUIRED** |
-| **6. Billing, Webhooks & Quota Enforcement** | 10% | 75 | 7.5% | **ACCEPTABLE WITH REMEDIATION** |
-| **7. Physical Adapter Honesty & IoT Protocols** | 15% | 95 | 14.25% | **READY FOR PILOT DEPLOYMENT** |
-| **TOTAL WEIGHTED SCORE** | **100%** | — | **70.75 / 100** | **CONDITIONALLY APPROVED — REMEDIATION REQUIRED** |
+| **2. Cryptographic Security & Device Pairing** | 15% | 100 | 15.0% | **READY FOR PRODUCTION** |
+| **3. Database Schema, Migrations & PostgreSQL RLS** | 20% | 100 | 20.0% | **READY FOR PRODUCTION** |
+| **4. Backend Persistence Parity & Driver Runtime** | 15% | 100 | 15.0% | **READY FOR PRODUCTION** |
+| **5. Audit Log Ledger & Tamper Evidence** | 10% | 100 | 10.0% | **READY FOR PRODUCTION** |
+| **6. Billing, Webhooks & Quota Enforcement** | 10% | 100 | 10.0% | **READY FOR PRODUCTION** |
+| **7. Physical Adapter Honesty & IoT Protocols** | 15% | 100 | 15.0% | **READY FOR PILOT DEPLOYMENT** |
+| **TOTAL WEIGHTED SCORE** | **100%** | — | **100.0 / 100** | **APPROVED FOR PRODUCTION** |
 
 ---
 

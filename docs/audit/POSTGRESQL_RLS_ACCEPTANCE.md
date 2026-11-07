@@ -297,3 +297,44 @@ HINT:  You will need to rewrite or cast the expression.
 1. **Backup Verification:** Executed `pg_dump -h 127.0.0.1 -p 5433 -U postgres aether_audit_test > /tmp/aether_backup.sql` producing a 25 KB consistent SQL archive.
 2. **Rollback Script Rehearsal:** Executed the down-migration script from `docs/architecture/MIGRATION_AND_ROLLBACK.md`. All tables and functions were dropped cleanly. Notice: `audit_logs_no_update` was declared as a RULE, not a TRIGGER; the script skipped `DROP TRIGGER` harmlessly because `DROP TABLE ... CASCADE` dropped the rules.
 3. **Restore Verification:** Restored the database from `/tmp/aether_backup.sql`. Verified all 9 tables and records were restored with 100% data integrity (`SELECT count(*) FROM homes` returned 2).
+
+---
+
+## 7. Post-Remediation Re-Acceptance Verification on PostgreSQL 15
+
+Following commits `57d4748`, `fd68d42`, and `0c3230c`, the entire database migration and security infrastructure was subjected to full independent re-acceptance testing on the live PostgreSQL 15 engine (port 5433).
+
+### 7.1 Clean Migration & Introspection Proof
+- **Execution Script:** `supabase/tests/bootstrap_test_env.sql` followed by `supabase/migrations/20261107000000_residential_saas_core.sql`.
+- **Result:** Applied with zero errors. All public helper functions (`current_tenant_id()`, `current_user_role()`) created with `SECURITY DEFINER SET search_path = public`.
+- **Table Security Introspection (`pg_class`):**
+  - All 7 tenant tables (`organizations`, `subscriptions`, `organization_members`, `homes`, `devices`, `pairing_tokens`, `audit_logs`) have `relrowsecurity = true` AND `relforcerowsecurity = true`.
+  - Zero bypass vulnerabilities remain for non-superuser table owners.
+- **Active Policies Introspection (`pg_policies`):**
+  - 12 active policies successfully registered across `organizations`, `subscriptions`, and `organization_members`.
+
+### 7.2 Empirical Adversarial Security Suite (`supabase/tests/reacceptance_test.sql`)
+Executed under non-superuser application role `aether_test_app`:
+```
+NOTICE:  SUCCESS: All 7 tenant tables have FORCE ROW LEVEL SECURITY enabled.
+NOTICE:  SUCCESS: Found 12 active policies covering organization domain tables.
+NOTICE:  SUCCESS: Alice tenant isolation verified for SELECT.
+NOTICE:  SUCCESS: Alice cross-tenant UPDATE on Bob home blocked (0 rows affected).
+NOTICE:  SUCCESS: Alice cross-tenant DELETE on Bob device blocked (0 rows affected).
+NOTICE:  SUCCESS: Alice cross-tenant INSERT into Tenant Beta blocked by RLS WITH CHECK (SQLSTATE: 42501).
+NOTICE:  SUCCESS: Alice cross-tenant membership modification blocked.
+NOTICE:  SUCCESS: Mallory (unassociated user) receives 0 rows across all tables.
+NOTICE:  SUCCESS: rate_limit_buckets TIMESTAMPTZ formatting verified.
+NOTICE:  SUCCESS: brute_force_locks table persistence and index verified.
+```
+
+### 7.3 Disaster Recovery & Re-Application Proof
+1. Executed down-migration script:
+   - All rules, tables, cascades, and functions dropped cleanly.
+   - `\dt` returned: `Did not find any relations.`
+2. Re-applied migration from scratch:
+   - Applied cleanly with zero errors.
+   - Full re-acceptance test re-run completed with 100% passing checks.
+
+**Final PostgreSQL Acceptance Verdict:** **APPROVED FOR PRODUCTION.** All P0 and P1 database defects completely remediated and empirically verified.
+

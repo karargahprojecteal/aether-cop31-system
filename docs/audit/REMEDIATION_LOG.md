@@ -6,20 +6,21 @@
 
 ---
 
-## 1. Remediation Summary Table
+## 1. Remediation Status Table (Post-Remediation Verification)
 
-| Defect ID | Category | Severity | Component | Root Cause |
-| :--- | :--- | :---: | :--- | :--- |
-| **`CRIT-DB-01`** | Database | **CRITICAL** | `20261107000000_residential_saas_core.sql` | Schema `auth` not created prior to defining functions. |
-| **`CRIT-DB-02`** | Database | **CRITICAL** | `20261107000000_residential_saas_core.sql` | RLS enabled on `organizations`, `subscriptions`, `organization_members` with 0 policies. |
-| **`CRIT-DB-03`** | Database | **CRITICAL** | `20261107000000_residential_saas_core.sql` | `FORCE ROW LEVEL SECURITY` omitted; table owners bypass RLS. |
-| **`CRIT-DB-04`** | Database | **HIGH** | `20261107000000_residential_saas_core.sql` | Table `brute_force_locks` missing in PostgreSQL DDL. |
-| **`CRIT-DB-05`** | Database | **CRITICAL** | `RateLimiterRepository.ts` | Millisecond epoch integer inserted into `TIMESTAMPTZ` column. |
-| **`CRIT-ARCH-06`** | Architecture | **CRITICAL** | `App.tsx` & `DatabaseService.ts` | Browser UI views import Node `node:sqlite` directly. |
-| **`HIGH-API-07`** | Security | **HIGH** | `aiServerEndpoint.ts` | Endpoint accepts unauthenticated `tenantId`/`userId` payloads. |
-| **`HIGH-AUDIT-08`**| Security | **HIGH** | `AuditLogRepository.ts` | Hash chain forks under concurrency; JSONB normalizes key order. |
-| **`HIGH-BILL-09`** | Security | **HIGH** | `ProductionBillingProvider.ts` | Auto-generates random `eventId` when missing in payload. |
-| **`MED-GW-10`** | IoT Reliability| **MEDIUM** | `LocalGatewayAdapter.ts` | Unbounded `processedSequenceIds: Set<number>` memory leak. |
+| Defect ID | Category | Severity | Component | Commit | Status | Verification Result |
+| :--- | :--- | :---: | :--- | :---: | :---: | :--- |
+| **`CRIT-DB-01`** | Database | **CRITICAL** | `20261107000000_residential_saas_core.sql` | `57d4748` | **RESOLVED** | Decoupled auth schema to `bootstrap_test_env.sql`; clean execution on PostgreSQL 15. |
+| **`CRIT-DB-02`** | Database | **CRITICAL** | `20261107000000_residential_saas_core.sql` | `57d4748` | **RESOLVED** | Added 12 RLS policies (SELECT/INSERT/UPDATE/DELETE) for organizations, subscriptions, members. |
+| **`CRIT-DB-03`** | Database | **CRITICAL** | `20261107000000_residential_saas_core.sql` | `57d4748` | **RESOLVED** | Enabled `FORCE ROW LEVEL SECURITY` across all 7 tenant tables; table owner bypass blocked. |
+| **`HIGH-DB-04`** | Database | **HIGH** | `20261107000000_residential_saas_core.sql` | `57d4748` | **RESOLVED** | Added `brute_force_locks` table & index to DDL and rollback scripts. |
+| **`CRIT-DB-05`** | Database | **CRITICAL** | `RateLimiterRepository.ts` | `57d4748` | **RESOLVED** | Formats `expires_at` as ISO 8601 string; atomic transaction wrapping added. |
+| **`CRIT-ARCH-06`** | Architecture | **CRITICAL** | `App.tsx` & `DatabaseService.ts` | `fd68d42` | **RESOLVED** | Decoupled UI to `AetherApiClient`; zero `node:sqlite` or Node modules in browser bundle. |
+| **`HIGH-API-07`** | Security | **HIGH** | `aiServerEndpoint.ts` | `fd68d42` | **RESOLVED** | Implemented HMAC-SHA256 JWT auth; tenant derived strictly from claims; quota attacks blocked. |
+| **`MED-AI-11`** | AI Reliability | **MEDIUM** | `geminiServerService.ts` | `fd68d42` | **RESOLVED** | Isolated circuit breaker state per-tenant; prevents cross-tenant cascade failures. |
+| **`HIGH-AUDIT-08`**| Security | **HIGH** | `AuditLogRepository.ts` | `0c3230c` | **RESOLVED** | Implemented RFC 8785 canonical JSON; serialized append-only writes via transactions. |
+| **`HIGH-BILL-09`** | Security | **HIGH** | `ProductionBillingProvider.ts` | `0c3230c` | **RESOLVED** | Strict rejection of webhook payloads missing `id`; replay protection verified. |
+| **`MED-GW-10`** | IoT Reliability| **MEDIUM** | `LocalGatewayAdapter.ts` | `0c3230c` | **RESOLVED** | Bounded 1,024-entry ring buffer; memory leakage eliminated; counter rollover supported. |
 
 ---
 
