@@ -64,10 +64,10 @@ GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO aether_test_app;
 GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO aether_test_app;
 
 -- 4. Seed Data (Executed as superuser / migration administrator)
-INSERT INTO organizations (id, name, slug, contact_email)
+INSERT INTO organizations (id, name, slug, contact_email, created_by_user_id)
 VALUES 
-    ('org-alpha', 'Tenant Alpha LLC', 'tenant-alpha', 'alpha@aether.energy'),
-    ('org-beta',  'Tenant Beta Corp',  'tenant-beta',  'beta@aether.energy');
+    ('org-alpha', 'Tenant Alpha LLC', 'tenant-alpha', 'alpha@aether.energy', '11111111-1111-1111-1111-111111111111'),
+    ('org-beta',  'Tenant Beta Corp',  'tenant-beta',  'beta@aether.energy',  '22222222-2222-2222-2222-222222222222');
 
 INSERT INTO organization_members (id, tenant_id, user_id, email, name, role)
 VALUES
@@ -201,6 +201,84 @@ BEGIN
         RAISE EXCEPTION 'ADVERSARIAL LEAK: Mallory unassociated user saw data! org=%, home=%, dev=%', org_cnt, home_cnt, dev_cnt;
     END IF;
     RAISE NOTICE 'SUCCESS: Mallory (unassociated user) receives 0 rows across all tables.';
+END $$;
+
+-- Adversarial Attack [CRIT-SEC-01]: Mallory attempts unauthorized takeover of org-alpha
+DO $$
+BEGIN
+    BEGIN
+        INSERT INTO organization_members (id, tenant_id, user_id, email, name, role)
+        VALUES ('mem-pwn-test', 'org-alpha', '33333333-3333-3333-3333-333333333333', 'mallory@evil.io', 'Mallory Hacker', 'OWNER');
+        RAISE EXCEPTION 'CRIT-SEC-01 VULNERABILITY: Mallory successfully inserted herself into org-alpha as OWNER!';
+    EXCEPTION WHEN OTHERS THEN
+        IF SQLSTATE = '42501' OR SQLSTATE = '44000' OR SQLERRM ~* 'row-level security' THEN
+            RAISE NOTICE 'SUCCESS: [CRIT-SEC-01] Mallory takeover of org-alpha blocked by RLS WITH CHECK (SQLSTATE: %).', SQLSTATE;
+        ELSE
+            RAISE;
+        END IF;
+    END;
+END $$;
+
+ROLLBACK;
+
+-- 6b. MULTI-TENANT SWITCHING & ANTI-SPOOFING VERIFICATION [CRIT-DB-03]
+BEGIN;
+-- Assign Alice to org-beta as well
+INSERT INTO organization_members (id, tenant_id, user_id, email, name, role)
+VALUES ('mem-alice-beta', 'org-beta', '11111111-1111-1111-1111-111111111111', 'alice@alpha.io', 'Alice Viewer', 'RESIDENT_VIEWER');
+
+SET LOCAL ROLE aether_test_app;
+SET LOCAL "request.jwt.claim.sub" = '11111111-1111-1111-1111-111111111111';
+SET LOCAL "request.jwt.claim.role" = 'authenticated';
+
+-- 1. Default fallback active tenant
+DO $$
+DECLARE
+    active_t text;
+BEGIN
+    active_t := public.current_tenant_id();
+    IF active_t <> 'org-alpha' THEN
+        RAISE EXCEPTION 'CRIT-DB-03 FAIL: Expected default tenant org-alpha, got %', active_t;
+    END IF;
+    RAISE NOTICE 'SUCCESS: [CRIT-DB-03] Deterministic fallback tenant resolved correctly: %', active_t;
+END $$;
+
+-- 2. Explicit tenant switch to org-beta
+SET LOCAL "app.current_tenant_id" = 'org-beta';
+DO $$
+DECLARE
+    active_t text;
+    home_name text;
+BEGIN
+    active_t := public.current_tenant_id();
+    IF active_t <> 'org-beta' THEN
+        RAISE EXCEPTION 'CRIT-DB-03 FAIL: Expected switched tenant org-beta, got %', active_t;
+    END IF;
+
+    SELECT name INTO home_name FROM homes;
+    IF home_name <> 'Beta Loft' THEN
+        RAISE EXCEPTION 'CRIT-DB-03 FAIL: Expected home Beta Loft, got %', home_name;
+    END IF;
+    RAISE NOTICE 'SUCCESS: [CRIT-DB-03] Explicit tenant switch to org-beta succeeded, scoped to: %', home_name;
+END $$;
+
+-- 3. Tenant spoofing attack: Alice attempts to switch to an unassociated organization
+SET LOCAL "app.current_tenant_id" = 'org-unassociated-999';
+DO $$
+DECLARE
+    active_t text;
+    h_count integer;
+BEGIN
+    active_t := public.current_tenant_id();
+    IF active_t IS NOT NULL THEN
+        RAISE EXCEPTION 'CRIT-DB-03 VULNERABILITY: Spoofed tenant was accepted! Got %', active_t;
+    END IF;
+
+    SELECT count(*) INTO h_count FROM homes;
+    IF h_count <> 0 THEN
+        RAISE EXCEPTION 'CRIT-DB-03 VULNERABILITY: Spoofed tenant allowed data access! Count: %', h_count;
+    END IF;
+    RAISE NOTICE 'SUCCESS: [CRIT-DB-03] Tenant spoofing attempt safely blocked (active tenant is NULL, 0 rows returned).';
 END $$;
 
 ROLLBACK;

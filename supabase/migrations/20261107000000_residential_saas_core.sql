@@ -14,9 +14,11 @@ CREATE TABLE IF NOT EXISTS organizations (
     name TEXT NOT NULL,
     slug TEXT NOT NULL UNIQUE,
     contact_email TEXT NOT NULL,
+    created_by_user_id TEXT DEFAULT auth.uid()::text,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+CREATE INDEX IF NOT EXISTS idx_organizations_creator ON organizations(created_by_user_id);
 
 -- 3. SUBSCRIPTIONS & QUOTA STATE
 CREATE TABLE IF NOT EXISTS subscriptions (
@@ -137,6 +139,7 @@ CREATE INDEX IF NOT EXISTS idx_brute_force_lock ON brute_force_locks(locked_unti
 CREATE TABLE IF NOT EXISTS audit_logs (
     id TEXT PRIMARY KEY DEFAULT ('aud-' || gen_random_uuid()),
     tenant_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    seq BIGINT NOT NULL DEFAULT 1,
     user_id TEXT NOT NULL,
     user_email TEXT,
     action TEXT NOT NULL,
@@ -171,21 +174,67 @@ CREATE INDEX IF NOT EXISTS idx_webhook_provider_event ON webhook_events(provider
 -- ==============================================================================
 
 -- Helper function to extract current authenticated user's tenant ID
--- Bound to public schema with explicit search_path to prevent injection
+-- Bound to public schema with explicit search_path to prevent injection.
+-- Resolves active tenant from session/JWT with strict membership validation,
+-- preventing context spoofing and non-deterministic flips.
 CREATE OR REPLACE FUNCTION public.current_tenant_id() RETURNS TEXT AS $$
-    SELECT tenant_id 
-    FROM organization_members 
-    WHERE user_id = auth.uid()::text 
-    LIMIT 1;
-$$ LANGUAGE SQL STABLE SECURITY DEFINER SET search_path = public;
+DECLARE
+    requested_tenant text;
+    resolved_tenant text;
+    uid_str text;
+BEGIN
+    uid_str := auth.uid()::text;
+    IF uid_str IS NULL OR uid_str = '' THEN
+        RETURN NULL;
+    END IF;
 
--- Helper function to extract current authenticated user's role in their tenant
-CREATE OR REPLACE FUNCTION public.current_user_role() RETURNS TEXT AS $$
-    SELECT role 
-    FROM organization_members 
-    WHERE user_id = auth.uid()::text AND tenant_id = public.current_tenant_id()
+    -- 1. Try explicit active tenant requested by client session or JWT claim
+    requested_tenant := COALESCE(
+        NULLIF(current_setting('app.current_tenant_id', true), ''),
+        NULLIF(current_setting('request.jwt.claim.tenant_id', true), '')
+    );
+
+    IF requested_tenant IS NOT NULL THEN
+        -- Strictly validate that the authenticated user is an active member of the requested tenant
+        SELECT tenant_id INTO resolved_tenant
+        FROM organization_members
+        WHERE user_id = uid_str AND tenant_id = requested_tenant
+        LIMIT 1;
+
+        -- If user is NOT a member of requested tenant, return NULL to deny spoofed access
+        RETURN resolved_tenant;
+    END IF;
+
+    -- 2. Fallback deterministically to user's first joined tenant
+    SELECT tenant_id INTO resolved_tenant
+    FROM organization_members
+    WHERE user_id = uid_str
+    ORDER BY joined_at ASC NULLS LAST, invited_at ASC, tenant_id ASC
     LIMIT 1;
-$$ LANGUAGE SQL STABLE SECURITY DEFINER SET search_path = public;
+
+    RETURN resolved_tenant;
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public;
+
+-- Helper function to extract current authenticated user's role in their active tenant
+CREATE OR REPLACE FUNCTION public.current_user_role() RETURNS TEXT AS $$
+DECLARE
+    curr_tenant text;
+    user_role text;
+BEGIN
+    curr_tenant := public.current_tenant_id();
+    IF curr_tenant IS NULL THEN
+        RETURN NULL;
+    END IF;
+
+    SELECT role INTO user_role
+    FROM organization_members
+    WHERE user_id = auth.uid()::text AND tenant_id = curr_tenant
+    LIMIT 1;
+
+    RETURN user_role;
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public;
 
 -- 1. ORGANIZATIONS RLS & FORCE RLS
 ALTER TABLE organizations ENABLE ROW LEVEL SECURITY;
@@ -193,7 +242,7 @@ ALTER TABLE organizations FORCE ROW LEVEL SECURITY;
 
 CREATE POLICY organizations_tenant_select ON organizations
     FOR SELECT
-    USING (id = public.current_tenant_id());
+    USING (id = public.current_tenant_id() OR created_by_user_id = auth.uid()::text);
 
 CREATE POLICY organizations_tenant_insert ON organizations
     FOR INSERT
@@ -218,7 +267,17 @@ CREATE POLICY subscriptions_tenant_select ON subscriptions
 
 CREATE POLICY subscriptions_tenant_insert ON subscriptions
     FOR INSERT
-    WITH CHECK (tenant_id = public.current_tenant_id() OR auth.uid() IS NOT NULL);
+    WITH CHECK (
+        (tenant_id = public.current_tenant_id() AND public.current_user_role() = 'OWNER')
+        OR (
+            EXISTS (
+                SELECT 1 FROM organizations o
+                WHERE o.id = subscriptions.tenant_id
+                AND NOT EXISTS (SELECT 1 FROM subscriptions s WHERE s.tenant_id = o.id)
+            )
+            AND auth.uid() IS NOT NULL
+        )
+    );
 
 CREATE POLICY subscriptions_tenant_update ON subscriptions
     FOR UPDATE
@@ -240,8 +299,18 @@ CREATE POLICY org_members_tenant_select ON organization_members
 CREATE POLICY org_members_tenant_insert ON organization_members
     FOR INSERT
     WITH CHECK (
-        (tenant_id = public.current_tenant_id() AND public.current_user_role() IN ('OWNER', 'ENERGY_MANAGER'))
-        OR (user_id = auth.uid()::text)
+        -- Scenario 1: Existing tenant member creation by an authorized OWNER
+        (tenant_id = public.current_tenant_id() AND public.current_user_role() = 'OWNER')
+        -- Scenario 2: Initial organization creator bootstrapping
+        OR (
+            user_id = auth.uid()::text
+            AND role = 'OWNER'
+            AND EXISTS (
+                SELECT 1 FROM organizations o 
+                WHERE o.id = organization_members.tenant_id 
+                AND o.created_by_user_id = auth.uid()::text
+            )
+        )
     );
 
 CREATE POLICY org_members_tenant_update ON organization_members
