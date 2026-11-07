@@ -60,6 +60,7 @@ export interface OrganizationMember {
 export interface AuditLogEntry {
   id: string;
   tenantId: string;
+  seq?: number;
   userId: string;
   userEmail?: string;
   action: string;

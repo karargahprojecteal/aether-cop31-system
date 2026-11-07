@@ -3,13 +3,33 @@ import * as crypto from 'node:crypto';
 import { AuditLogEntry } from '../../types/saas';
 import { DatabaseService } from './DatabaseService';
 import { canonicalizeJson } from '../crypto/canonicalJson';
+import { IDatabaseAdapter, ISyncDatabaseAdapter } from './adapter/IDatabaseAdapter';
+import { SqliteDatabaseAdapter } from './adapter/SqliteDatabaseAdapter';
+import { AuditAnchorStore } from './audit/AuditAnchorStore';
 
 export class AuditLogRepository {
-  private db: DatabaseSync;
+  private adapter: ISyncDatabaseAdapter;
+  private anchorStore: AuditAnchorStore;
 
-  constructor(db?: DatabaseSync) {
-    this.db = db || DatabaseService.getInstance().getDb();
+  constructor(dbOrAdapter?: DatabaseSync | IDatabaseAdapter, anchorStore?: AuditAnchorStore) {
+    if (!dbOrAdapter) {
+      this.adapter = DatabaseService.getInstance().getAdapter() as ISyncDatabaseAdapter;
+    } else if ('dialect' in dbOrAdapter) {
+      this.adapter = dbOrAdapter as ISyncDatabaseAdapter;
+    } else {
+      this.adapter = new SqliteDatabaseAdapter(dbOrAdapter);
+    }
+    this.anchorStore = anchorStore || AuditAnchorStore.getInstance();
     this.enforceImmutabilityTriggers();
+    this.ensureSchemaCompatibility();
+  }
+
+  private ensureSchemaCompatibility(): void {
+    if (this.adapter.dialect === 'sqlite') {
+      try {
+        this.adapter.exec('ALTER TABLE audit_logs ADD COLUMN seq INTEGER NOT NULL DEFAULT 1;');
+      } catch (_) {}
+    }
   }
 
   /**
@@ -17,24 +37,28 @@ export class AuditLogRepository {
    * Prevents UPDATE and DELETE operations on audit_logs table.
    */
   private enforceImmutabilityTriggers(): void {
-    this.db.exec(`
-      CREATE TRIGGER IF NOT EXISTS audit_logs_no_update
-      BEFORE UPDATE ON audit_logs
-      BEGIN
-        SELECT RAISE(FAIL, 'SECURITY ALERT: audit_logs is an append-only immutable ledger. Updates are prohibited.');
-      END;
+    if (this.adapter.dialect === 'sqlite') {
+      try {
+        this.adapter.exec(`
+          CREATE TRIGGER IF NOT EXISTS audit_logs_no_update
+          BEFORE UPDATE ON audit_logs
+          BEGIN
+            SELECT RAISE(FAIL, 'SECURITY ALERT: audit_logs is an append-only immutable ledger. Updates are prohibited.');
+          END;
 
-      CREATE TRIGGER IF NOT EXISTS audit_logs_no_delete
-      BEFORE DELETE ON audit_logs
-      BEGIN
-        SELECT RAISE(FAIL, 'SECURITY ALERT: audit_logs is an append-only immutable ledger. Deletions are prohibited.');
-      END;
-    `);
+          CREATE TRIGGER IF NOT EXISTS audit_logs_no_delete
+          BEFORE DELETE ON audit_logs
+          BEGIN
+            SELECT RAISE(FAIL, 'SECURITY ALERT: audit_logs is an append-only immutable ledger. Deletions are prohibited.');
+          END;
+        `);
+      } catch (_) {}
+    }
   }
 
   /**
    * Records a new audit log entry with cryptographic hash chaining,
-   * RFC 8785 canonical JSON, and atomic transaction serialization.
+   * RFC 8785 canonical JSON, sequence numbering, and atomic transaction serialization.
    */
   public record(entry: {
     tenantId: string;
@@ -48,48 +72,52 @@ export class AuditLogRepository {
     const id = `aud-${crypto.randomBytes(8).toString('hex')}`;
     const timestamp = new Date().toISOString();
 
-    // Transactional write ensures concurrent loggers do not branch the hash chain
-    this.db.exec('BEGIN IMMEDIATE');
-    try {
-      // 1. Fetch latest record hash for this tenant to form the chain
-      const latestStmt = this.db.prepare(`
-        SELECT record_hash FROM audit_logs WHERE tenant_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1
-      `);
-      const latest = latestStmt.get(entry.tenantId) as any;
-      const prevHash = latest ? latest.record_hash : 'GENESIS_BLOCK_0000000000000000000000000000000000000000000000000000000000000000';
+    return this.adapter.transaction(() => {
+      // 1. Fetch latest record for this tenant to form the chain and sequence
+      const latest = this.adapter.queryOne<{ seq: number | string; record_hash: string }>(
+        'SELECT seq, record_hash FROM audit_logs WHERE tenant_id = ? ORDER BY seq DESC, created_at DESC, id DESC LIMIT 1',
+        [entry.tenantId]
+      );
+
+      const nextSeq = latest && latest.seq !== undefined && latest.seq !== null ? Number(latest.seq) + 1 : 1;
+      const prevHash = latest && latest.record_hash
+        ? latest.record_hash
+        : 'GENESIS_BLOCK_0000000000000000000000000000000000000000000000000000000000000000';
 
       // 2. Compute cryptographic record hash using RFC 8785 Canonical JSON
       const detailsCanonical = canonicalizeJson(entry.details);
-      const hashPayload = `${prevHash}|${entry.tenantId}|${entry.userId}|${entry.action}|${entry.category}|${timestamp}|${detailsCanonical}`;
+      const hashPayload = `${prevHash}|${nextSeq}|${entry.tenantId}|${entry.userId}|${entry.action}|${entry.category}|${timestamp}|${detailsCanonical}`;
       const recordHash = crypto.createHash('sha256').update(hashPayload).digest('hex');
 
       // 3. Insert into database
-      const insertStmt = this.db.prepare(`
-        INSERT INTO audit_logs (
-          id, tenant_id, user_id, user_email, action, category, details,
+      this.adapter.execute(
+        `INSERT INTO audit_logs (
+          id, tenant_id, seq, user_id, user_email, action, category, details,
           severity, prev_record_hash, record_hash, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
-
-      insertStmt.run(
-        id,
-        entry.tenantId,
-        entry.userId,
-        entry.userEmail || null,
-        entry.action,
-        entry.category,
-        detailsCanonical,
-        entry.severity,
-        prevHash,
-        recordHash,
-        timestamp
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          id,
+          entry.tenantId,
+          nextSeq,
+          entry.userId,
+          entry.userEmail || null,
+          entry.action,
+          entry.category,
+          detailsCanonical,
+          entry.severity,
+          prevHash,
+          recordHash,
+          timestamp,
+        ]
       );
 
-      this.db.exec('COMMIT');
+      // 4. Anchor state externally with HMAC signature
+      this.anchorStore.createCheckpoint(entry.tenantId, nextSeq, recordHash);
 
       return {
         id,
         tenantId: entry.tenantId,
+        seq: nextSeq,
         userId: entry.userId,
         userEmail: entry.userEmail,
         action: entry.action,
@@ -100,27 +128,25 @@ export class AuditLogRepository {
         prevRecordHash: prevHash,
         recordHash,
       };
-    } catch (err) {
-      try { this.db.exec('ROLLBACK'); } catch (_) {}
-      throw err;
-    }
+    }) as AuditLogEntry;
   }
 
   /**
    * Retrieves audit logs for a tenant with strict tenant boundary filtering
    */
   public listLogs(tenantId: string, limit: number = 50): AuditLogEntry[] {
-    const stmt = this.db.prepare(`
-      SELECT * FROM audit_logs
-      WHERE tenant_id = ?
-      ORDER BY created_at DESC, rowid DESC
-      LIMIT ?
-    `);
-    const rows = stmt.all(tenantId, limit) as any[];
+    const rows = this.adapter.query<any>(
+      `SELECT * FROM audit_logs
+       WHERE tenant_id = ?
+       ORDER BY seq DESC, created_at DESC, id DESC
+       LIMIT ?`,
+      [tenantId, limit]
+    ) as any[];
 
     return rows.map((r) => ({
       id: r.id,
       tenantId: r.tenant_id,
+      seq: r.seq !== undefined && r.seq !== null ? Number(r.seq) : undefined,
       userId: r.user_id,
       userEmail: r.user_email || undefined,
       action: r.action,
@@ -135,19 +161,68 @@ export class AuditLogRepository {
 
   /**
    * Verifies the cryptographic integrity of the audit log hash chain for a tenant.
-   * Leverages RFC 8785 Canonical JSON so that PostgreSQL JSONB key re-ordering does not cause false positives.
-   * Returns valid: true if untouched, or valid: false with tamper details.
+   * Enforces:
+   * 1. Monotonic unbroken sequence verification (seq: 1..N).
+   * 2. Hash-chain linkage (prev_record_hash match).
+   * 3. Canonical payload integrity (RFC 8785 Canonical JSON).
+   * 4. External signed anchor checkpoint verification to defeat tail truncation and table wipes.
    */
   public verifyIntegrity(tenantId: string): { valid: boolean; totalChecked: number; tamperedRecordId?: string; error?: string } {
-    const stmt = this.db.prepare(`
-      SELECT * FROM audit_logs
-      WHERE tenant_id = ?
-      ORDER BY created_at ASC, rowid ASC
-    `);
-    const rows = stmt.all(tenantId) as any[];
+    const checkpoint = this.anchorStore.getCheckpoint(tenantId);
+    if (checkpoint) {
+      if (!this.anchorStore.verifyCheckpointSignature(checkpoint)) {
+        return {
+          valid: false,
+          totalChecked: 0,
+          error: `Audit anchor signature invalid or tampered for tenant ${tenantId}`,
+        };
+      }
+    }
+
+    const rows = this.adapter.query<any>(
+      `SELECT * FROM audit_logs
+       WHERE tenant_id = ?
+       ORDER BY seq ASC, created_at ASC, id ASC`,
+      [tenantId]
+    ) as any[];
+
+    if (checkpoint && rows.length === 0) {
+      return {
+        valid: false,
+        totalChecked: 0,
+        error: `CRITICAL AUDIT TAMPER: Audit ledger has been wiped! Anchor expects lastSeq ${checkpoint.lastSeq}`,
+      };
+    }
+
+    if (checkpoint && rows.length > 0) {
+      const lastRow = rows[rows.length - 1];
+      const lastRowSeq = Number(lastRow.seq || 0);
+      if (lastRowSeq !== checkpoint.lastSeq || lastRow.record_hash !== checkpoint.lastRecordHash) {
+        return {
+          valid: false,
+          totalChecked: rows.length,
+          tamperedRecordId: lastRow.id,
+          error: `CRITICAL AUDIT TAMPER: Audit ledger tail does not match external anchor! Expected seq ${checkpoint.lastSeq} with hash ${checkpoint.lastRecordHash}, but found seq ${lastRowSeq} with hash ${lastRow.record_hash}`,
+        };
+      }
+    }
+
     let expectedPrevHash = 'GENESIS_BLOCK_0000000000000000000000000000000000000000000000000000000000000000';
 
-    for (const r of rows) {
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      const expectedSeq = i + 1;
+      const actualSeq = Number(r.seq || 0);
+
+      if (actualSeq !== expectedSeq) {
+        return {
+          valid: false,
+          totalChecked: rows.length,
+          tamperedRecordId: r.id,
+          error: `Sequence gap detected: record ${r.id} has seq ${actualSeq} but expected ${expectedSeq}`,
+        };
+      }
+
       if (r.prev_record_hash !== expectedPrevHash) {
         return {
           valid: false,
@@ -160,7 +235,7 @@ export class AuditLogRepository {
       // Recompute record hash using RFC 8785 Canonical JSON
       const parsedDetails = typeof r.details === 'string' ? JSON.parse(r.details) : r.details;
       const detailsCanonical = canonicalizeJson(parsedDetails);
-      const payload = `${r.prev_record_hash}|${r.tenant_id}|${r.user_id}|${r.action}|${r.category}|${r.created_at}|${detailsCanonical}`;
+      const payload = `${r.prev_record_hash}|${actualSeq}|${r.tenant_id}|${r.user_id}|${r.action}|${r.category}|${r.created_at}|${detailsCanonical}`;
       const computed = crypto.createHash('sha256').update(payload).digest('hex');
 
       if (computed !== r.record_hash) {
