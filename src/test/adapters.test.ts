@@ -80,6 +80,22 @@ describe('AETHER Hardware Adapters Suite', () => {
     const secondResult = gwAdapter.ingestMqttPacket(mqttPacket);
     expect(secondResult.ingested).toBe(false);
     expect(secondResult.duplicate).toBe(true);
+
+    // Bounded memory test: Send 2,000 packets through 1,024-entry window
+    for (let seq = 2000; seq < 4000; seq++) {
+      gwAdapter.ingestMqttPacket({
+        seq,
+        ts: '2026-11-07T08:35:00Z',
+        p_w: 1200,
+        e_kwh: 500,
+      });
+    }
+    expect(gwAdapter.getSequenceHistorySize()).toBe(1024);
+
+    // Sequence rollover test: Old sequence (1042) was evicted from the 1024-entry window and can be re-ingested
+    const rolloverResult = gwAdapter.ingestMqttPacket(mqttPacket);
+    expect(rolloverResult.ingested).toBe(true);
+    expect(rolloverResult.duplicate).toBe(false);
   });
 
   it('ManualConsumptionAdapter records utility bill and calculates daily averages', async () => {

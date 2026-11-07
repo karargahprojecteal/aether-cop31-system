@@ -69,4 +69,20 @@ describe('Integration: Subscription Webhook Security & Idempotency', () => {
     expect(replayDelivery.isReplay).toBe(true);
     expect(replayDelivery.error).toMatch(/replay rejected/i);
   });
+
+  it('rejects webhooks missing an event id to prevent replay protection bypass', () => {
+    const rawPayload = JSON.stringify({
+      type: 'invoice.payment_succeeded',
+      data: { tenantId: 'tenant-123', amount: 4900 },
+    });
+
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const signedPayload = `${nowSeconds}.${rawPayload}`;
+    const hmacSig = crypto.createHmac('sha256', webhookSecret).update(signedPayload).digest('hex');
+    const header = `t=${nowSeconds},v1=${hmacSig}`;
+
+    const result = billingProvider.verifyWebhookDetailed(rawPayload, header, webhookSecret);
+    expect(result.valid).toBe(false);
+    expect(result.error).toMatch(/missing required event id/i);
+  });
 });

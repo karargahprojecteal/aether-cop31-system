@@ -36,10 +36,14 @@ export class LocalGatewayAdapter implements IRuntimeAdapter {
   private packetsReceived: number = 0;
   private packetErrors: number = 0;
   private lastHeartbeat?: string;
+  private readonly maxSequenceHistory: number = 1024;
+  private sequenceQueue: number[] = [];
   private processedSequenceIds: Set<number> = new Set();
+  private lastObservedSequence: number = -1;
 
-  constructor(adapterId: string = 'local-gateway-mqtt') {
+  constructor(adapterId: string = 'local-gateway-mqtt', maxSequenceHistory: number = 1024) {
     this.adapterId = adapterId;
+    this.maxSequenceHistory = maxSequenceHistory;
   }
 
   public async initialize(config: Record<string, any>): Promise<void> {
@@ -118,12 +122,15 @@ export class LocalGatewayAdapter implements IRuntimeAdapter {
       });
 
       this.processedSequenceIds.add(packet.seq);
-      if (this.processedSequenceIds.size > 10000) {
-        // Prevent unbounded memory growth by trimming older sequence IDs
-        const arr = Array.from(this.processedSequenceIds);
-        this.processedSequenceIds = new Set(arr.slice(5000));
+      this.sequenceQueue.push(packet.seq);
+      if (this.sequenceQueue.length > this.maxSequenceHistory) {
+        const oldestSeq = this.sequenceQueue.shift();
+        if (oldestSeq !== undefined) {
+          this.processedSequenceIds.delete(oldestSeq);
+        }
       }
 
+      this.lastObservedSequence = packet.seq;
       this.packetsReceived++;
       if (this.dataCallback) {
         this.dataCallback(normalized);
@@ -137,5 +144,12 @@ export class LocalGatewayAdapter implements IRuntimeAdapter {
       }
       throw err;
     }
+  }
+
+  /**
+   * Helper to inspect sequence deduplication window size
+   */
+  public getSequenceHistorySize(): number {
+    return this.processedSequenceIds.size;
   }
 }

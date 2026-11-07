@@ -70,7 +70,10 @@ export class ProductionBillingProvider implements IBillingProvider {
 
     try {
       const parsedPayload = JSON.parse(rawPayload);
-      const eventId = parsedPayload.id || `evt_${crypto.randomBytes(6).toString('hex')}`;
+      const eventId = parsedPayload.id;
+      if (!eventId || typeof eventId !== 'string' || !eventId.trim()) {
+        return { valid: false, isReplay: false, error: 'Malformed webhook: Missing required event id' };
+      }
       const eventType = parsedPayload.type || parsedPayload.event || 'unknown';
       const tenantId = parsedPayload.data?.tenantId || parsedPayload.tenantId || null;
 

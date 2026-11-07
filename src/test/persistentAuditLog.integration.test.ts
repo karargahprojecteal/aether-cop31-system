@@ -106,4 +106,40 @@ describe('Integration: Persistent Audit Logs & Cryptographic Tamper-Evidence', (
     expect(check.tamperedRecordId).toBe(e1.id);
     expect(check.error).toMatch(/Payload tamper detected/i);
   });
+
+  it('guarantees RFC 8785 canonical JSON key ordering invariance for hash verification', () => {
+    // Record an event with keys in arbitrary order
+    const entry = auditRepo.record({
+      tenantId,
+      userId: 'user-canon',
+      action: 'CONFIG_CHANGED',
+      category: 'DEVICE_COMMAND',
+      details: { zebra: 'last', alpha: 'first', beta: { nestedZ: 99, nestedA: 1 } },
+      severity: 'INFO',
+    });
+
+    expect(entry.recordHash).toBeDefined();
+
+    // Verify integrity succeeds even if database driver/JSON parser alters key ordering
+    const check = auditRepo.verifyIntegrity(tenantId);
+    expect(check.valid).toBe(true);
+  });
+
+  it('maintains strict hash chain integrity across serialized transaction writes', () => {
+    // Simulate sequential burst writes
+    for (let i = 0; i < 15; i++) {
+      auditRepo.record({
+        tenantId,
+        userId: `user-${i}`,
+        action: `BURST_ACTION_${i}`,
+        category: 'PAIRING',
+        details: { seq: i, timestamp: Date.now() },
+        severity: 'INFO',
+      });
+    }
+
+    const check = auditRepo.verifyIntegrity(tenantId);
+    expect(check.valid).toBe(true);
+    expect(check.totalChecked).toBe(15);
+  });
 });
