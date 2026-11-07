@@ -28,13 +28,13 @@ export interface AiDecisionResponse {
 /**
  * Server-Side AI Gateway Endpoint Handler.
  * Executes on Node.js/Vercel serverless function or backend worker.
- * Strictly verifies JWT bearer token, checks tenant membership server-side,
+ * Strictly verifies JWT bearer token, checks tenant membership server-side (mandatory),
  * prevents cross-tenant quota depletion, and validates telemetry schema constraints.
  */
 export async function handleAiDecisionEndpoint(
   request: AiDecisionRequest,
   authHeader?: string,
-  tenantRepo?: TenantRepository
+  tenantRepo: TenantRepository = new TenantRepository()
 ): Promise<AiDecisionResponse> {
   const start = Date.now();
 
@@ -84,20 +84,18 @@ export async function handleAiDecisionEndpoint(
     };
   }
 
-  // 3. Verify Server-Side Organization Membership
-  if (tenantRepo) {
-    const member = tenantRepo.getMember(verifiedTenantId, verifiedUserId);
-    if (!member) {
-      return {
-        success: false,
-        decisions: [],
-        executionTimeMs: Date.now() - start,
-        source: 'DETERMINISTIC_FALLBACK',
-        circuitBreakerTripped: false,
-        statusCode: 403,
-        error: `403 Forbidden: User '${verifiedUserId}' is not an active member of organization '${verifiedTenantId}'.`,
-      };
-    }
+  // 3. Verify Server-Side Organization Membership (MANDATORY, NEVER SKIPPED)
+  const member = tenantRepo.getMember(verifiedTenantId, verifiedUserId);
+  if (!member) {
+    return {
+      success: false,
+      decisions: [],
+      executionTimeMs: Date.now() - start,
+      source: 'DETERMINISTIC_FALLBACK',
+      circuitBreakerTripped: false,
+      statusCode: 403,
+      error: `403 Forbidden: User '${verifiedUserId}' is not an active member of organization '${verifiedTenantId}'.`,
+    };
   }
 
   // 4. Validate Input Payload Schema

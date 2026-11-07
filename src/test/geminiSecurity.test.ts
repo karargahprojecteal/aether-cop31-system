@@ -5,6 +5,8 @@ import { tenantManagerInstance } from '../services/saas/TenantManager';
 import { subscriptionServiceInstance } from '../services/saas/SubscriptionService';
 import { signJwtToken } from '../services/auth/jwtVerifier';
 
+import { TenantRepository } from '../services/persistence/TenantRepository';
+
 describe('AETHER Gemini AI Boundary & Zero Client Leak Security', () => {
   const tenantId = 'tenant-ai-boundary-test';
   const victimTenantId = 'tenant-victim-org';
@@ -43,6 +45,18 @@ describe('AETHER Gemini AI Boundary & Zero Client Leak Security', () => {
     // Setup test organization
     tenantManagerInstance.createOrganization('AI Boundary Org', 'ai@test.io', 'ai-boundary-org', tenantId);
     tenantManagerInstance.createOrganization('Victim Org', 'victim@test.io', 'victim-org', victimTenantId);
+
+    const tenantRepo = new TenantRepository();
+    tenantRepo.addMember({
+      id: 'mem-ai-analyst',
+      tenantId,
+      userId,
+      name: 'AI Analyst',
+      email: 'analyst@test.io',
+      role: 'ANALYST',
+      assignedHomeIds: [],
+      invitedAt: new Date().toISOString(),
+    });
 
     validAuthHeader = `Bearer ${signJwtToken({ sub: userId, tenantId })}`;
   });

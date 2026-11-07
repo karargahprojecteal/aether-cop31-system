@@ -1,10 +1,9 @@
-import { describe, it, expect } from 'vitest';
-import * as crypto from 'node:crypto';
-import { handleAiDecisionEndpoint, AiDecisionRequest } from '../services/ai/aiServerEndpoint';
-import { signJwtToken, verifyJwtToken, DEFAULT_JWT_SECRET } from '../services/auth/jwtVerifier';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { handleAiDecisionEndpoint } from '../services/ai/aiServerEndpoint';
+import { signJwtToken, verifyJwtToken, getJwtSecret } from '../services/auth/jwtVerifier';
 import { TelemetryPoint } from '../types/telemetry';
 
-describe('AI Authorization & JWT Challenge', () => {
+describe('AI Authorization & JWT Remediation Challenge', () => {
   const victimTenant = 'tenant-victim-org';
   const attackerTenant = 'tenant-attacker-org';
 
@@ -34,6 +33,16 @@ describe('AI Authorization & JWT Challenge', () => {
     gridCarbonIntensityGCo2PerKwh: 512,
     gridElectricityPriceTryPerKwh: 6.85,
   };
+
+  const origEnv = { ...process.env };
+
+  beforeEach(() => {
+    process.env = { ...origEnv };
+  });
+
+  afterEach(() => {
+    process.env = { ...origEnv };
+  });
 
   it('rejects forged JWT signatures', async () => {
     const validToken = signJwtToken({ sub: 'user-1', tenantId: victimTenant });
@@ -86,22 +95,25 @@ describe('AI Authorization & JWT Challenge', () => {
     expect(res.error).toMatch(/Security Boundary Violation/i);
   });
 
-  it('VULNERABILITY: Hardcoded DEFAULT_JWT_SECRET allows forging arbitrary valid tokens when process.env.JWT_SECRET is unset', () => {
-    // If process.env.JWT_SECRET is not explicitly provided, DEFAULT_JWT_SECRET is used
-    expect(DEFAULT_JWT_SECRET).toBe('aether_secure_jwt_secret_cop31_residential_saas_2026');
+  it('REMEDIATED: Production environment strictly fails closed when JWT_SECRET is unset', () => {
+    process.env.NODE_ENV = 'production';
+    delete process.env.JWT_SECRET;
 
-    // Attacker crafts arbitrary token signed with the hardcoded secret
-    const rogueToken = signJwtToken(
-      { sub: 'rogue-actor', tenantId: victimTenant, role: 'OWNER' },
-      'aether_secure_jwt_secret_cop31_residential_saas_2026'
-    );
-
-    const verifyResult = verifyJwtToken(rogueToken);
-    expect(verifyResult.valid).toBe(true);
-    expect(verifyResult.claims?.tenantId).toBe(victimTenant);
+    expect(() => getJwtSecret()).toThrow(/FATAL SECURITY MISCONFIGURATION: process.env.JWT_SECRET is strictly required/i);
   });
 
-  it('VULNERABILITY: Omission of optional tenantRepo completely bypasses server-side membership check', async () => {
+  it('REMEDIATED: Algorithm pinning rejects tokens with alg !== HS256 (e.g. alg: none attack)', () => {
+    // Craft alg: none token
+    const headerNone = Buffer.from(JSON.stringify({ alg: 'none', typ: 'JWT' })).toString('base64url');
+    const payload = Buffer.from(JSON.stringify({ sub: 'u1', tenantId: victimTenant, exp: 9999999999, iat: 1000 })).toString('base64url');
+    const tokenNone = `${headerNone}.${payload}.`;
+
+    const res = verifyJwtToken(tokenNone);
+    expect(res.valid).toBe(false);
+    expect(res.error).toMatch(/Insecure or unsupported JWT algorithm/i);
+  });
+
+  it('REMEDIATED: Mandatory tenantRepo ensures non-member requests are rejected with 403 even when token is signed', async () => {
     // Attacker signs token with valid secret for a victim tenant where they are NOT a member
     const rogueToken = signJwtToken({ sub: 'non-member-stranger', tenantId: victimTenant });
 
@@ -109,10 +121,11 @@ describe('AI Authorization & JWT Challenge', () => {
     const res = await handleAiDecisionEndpoint(
       { tenantId: victimTenant, userId: 'non-member-stranger', telemetry: baseTelemetry },
       `Bearer ${rogueToken}`
-      // tenantRepo omitted!
+      // tenantRepo defaulted to new TenantRepository()
     );
 
-    // Membership was NOT checked, request proceeded into AI decision pipeline
-    expect(res.statusCode).not.toBe(403);
+    // Membership WAS strictly checked and rejected with 403 Forbidden!
+    expect(res.statusCode).toBe(403);
+    expect(res.error).toMatch(/403 Forbidden: User 'non-member-stranger' is not an active member/i);
   });
 });

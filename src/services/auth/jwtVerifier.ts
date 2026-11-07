@@ -9,7 +9,28 @@ export interface AuthJwtClaims {
   iat: number;       // epoch seconds
 }
 
-export const DEFAULT_JWT_SECRET = process.env.JWT_SECRET || 'aether_secure_jwt_secret_cop31_residential_saas_2026';
+/**
+ * Resolves the JWT signing and verification secret.
+ * In production (NODE_ENV === 'production'), process.env.JWT_SECRET is strictly mandatory.
+ * The system refuses to boot or operate with hardcoded fallbacks in production.
+ */
+export function getJwtSecret(): string {
+  const secret = process.env.JWT_SECRET;
+  if (!secret) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error(
+        'FATAL SECURITY MISCONFIGURATION: process.env.JWT_SECRET is strictly required in production mode. Refusing to operate with insecure fallback.'
+      );
+    }
+    return 'aether_secure_jwt_secret_cop31_residential_saas_2026';
+  }
+  if (secret.length < 32) {
+    throw new Error('SECURITY ERROR: JWT_SECRET must be at least 32 characters long for cryptographic security.');
+  }
+  return secret;
+}
+
+export const DEFAULT_JWT_SECRET = process.env.JWT_SECRET || (process.env.NODE_ENV === 'production' ? '' : 'aether_secure_jwt_secret_cop31_residential_saas_2026');
 
 function base64UrlEncode(data: string | Buffer): string {
   const buf = typeof data === 'string' ? Buffer.from(data, 'utf8') : data;
@@ -29,8 +50,9 @@ function base64UrlDecode(str: string): string {
  */
 export function signJwtToken(
   claims: { sub: string; tenantId: string; email?: string; role?: string; expiresInSeconds?: number },
-  secret: string = DEFAULT_JWT_SECRET
+  secret?: string
 ): string {
+  const signingSecret = secret || getJwtSecret();
   const now = Math.floor(Date.now() / 1000);
   const exp = now + (claims.expiresInSeconds || 3600); // 1 hour default
 
@@ -48,19 +70,19 @@ export function signJwtToken(
   const encodedPayload = base64UrlEncode(JSON.stringify(payload));
   const message = `${encodedHeader}.${encodedPayload}`;
 
-  const signature = crypto.createHmac('sha256', secret).update(message).digest();
+  const signature = crypto.createHmac('sha256', signingSecret).update(message).digest();
   const encodedSignature = base64UrlEncode(signature);
 
   return `${message}.${encodedSignature}`;
 }
 
 /**
- * Cryptographically verifies an incoming JWT token with constant-time equality check
- * and expiration enforcement.
+ * Cryptographically verifies an incoming JWT token with constant-time equality check,
+ * algorithm pinning (HS256), and expiration enforcement.
  */
 export function verifyJwtToken(
   token: string,
-  secret: string = DEFAULT_JWT_SECRET
+  secret?: string
 ): { valid: boolean; claims?: AuthJwtClaims; error?: string } {
   if (!token || typeof token !== 'string') {
     return { valid: false, error: 'Token is missing or empty' };
@@ -73,9 +95,31 @@ export function verifyJwtToken(
 
   const [encodedHeader, encodedPayload, encodedSignature] = parts;
 
-  // 1. Verify Signature
+  // 1. Validate Header & Algorithm Pinning
+  try {
+    const headerJson = base64UrlDecode(encodedHeader);
+    const header = JSON.parse(headerJson);
+    if (header.alg !== 'HS256') {
+      return { valid: false, error: `Insecure or unsupported JWT algorithm: expected 'HS256', got '${header.alg}'` };
+    }
+    if (header.typ !== 'JWT') {
+      return { valid: false, error: `Invalid JWT type: expected 'JWT', got '${header.typ}'` };
+    }
+  } catch (err: any) {
+    return { valid: false, error: `Malformed header JSON: ${err.message}` };
+  }
+
+  // 2. Resolve verification secret safely
+  let verificationSecret: string;
+  try {
+    verificationSecret = secret || getJwtSecret();
+  } catch (err: any) {
+    return { valid: false, error: err.message };
+  }
+
+  // 3. Verify Signature
   const message = `${encodedHeader}.${encodedPayload}`;
-  const expectedSignature = crypto.createHmac('sha256', secret).update(message).digest();
+  const expectedSignature = crypto.createHmac('sha256', verificationSecret).update(message).digest();
   const expectedEncoded = base64UrlEncode(expectedSignature);
 
   if (encodedSignature.length !== expectedEncoded.length) {
@@ -91,7 +135,7 @@ export function verifyJwtToken(
     return { valid: false, error: 'Cryptographic signature verification failed: token has been tampered with' };
   }
 
-  // 2. Parse & Validate Payload
+  // 4. Parse & Validate Payload
   try {
     const payloadJson = base64UrlDecode(encodedPayload);
     const claims = JSON.parse(payloadJson) as AuthJwtClaims;
@@ -100,7 +144,7 @@ export function verifyJwtToken(
       return { valid: false, error: 'Missing mandatory claims: sub (userId) and tenantId are required' };
     }
 
-    // 3. Expiration Check
+    // 5. Expiration Check
     const now = Math.floor(Date.now() / 1000);
     if (claims.exp && claims.exp < now) {
       return { valid: false, error: `Token has expired at timestamp ${claims.exp} (current time: ${now})` };
