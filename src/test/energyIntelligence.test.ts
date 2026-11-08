@@ -44,6 +44,19 @@ describe('AETHER Energy Intelligence & Disaggregation Analysis', () => {
     expect(co2Kg).toBeGreaterThan(35);
     expect(co2Kg).toBeLessThan(60);
     expect(emissionFactorUsed).toBeGreaterThan(0.35);
+
+    // Provenance verification: TEIAS factor is an unverified model estimate compared against ETKB EVÇED
+    const carbonMetadata = EnergyIntelligenceEngine.OFFICIAL_CARBON_FACTORS_2024;
+    expect(carbonMetadata.verificationStatus).toBe('UNVERIFIED_MODEL_ESTIMATE');
+    expect(carbonMetadata.datasetType).toBe('MODEL_ESTIMATE_HIGH_FOSSIL_PEAK');
+    expect(carbonMetadata.officialStatutoryBenchmark?.documentNo).toBe('ETKB-EVÇED-FRM-042');
+    expect(carbonMetadata.officialStatutoryBenchmark?.gridAverageGenerationFactor).toBe(0.434);
+
+    // Provenance verification: EPDK 2024-Q3 is a historical benchmark, not active retail live tariff
+    const tariffMetadata = EnergyIntelligenceEngine.OFFICIAL_EPDK_TARIFF_2024;
+    expect(tariffMetadata.datasetType).toBe('HISTORICAL_BENCHMARK');
+    expect(tariffMetadata.isCurrentLiveTariff).toBe(false);
+    expect(tariffMetadata.validityPeriod).toBe('2024-07-01_to_2024-10-01');
   });
 
   it('differentiates NILM confidence between physical sub-meter vs derived wavelet', () => {

@@ -7,6 +7,9 @@ export interface TariffMetadata {
   officialGazetteNo: '32590';
   tariffVersion: '2024-Q3-MESKEN-01';
   effectiveDate: '2024-07-01';
+  datasetType: 'HISTORICAL_BENCHMARK' | 'LIVE_REGULATORY_ACTIVE';
+  validityPeriod: '2024-07-01_to_2024-10-01';
+  isCurrentLiveTariff: boolean;
   currency: 'TRY';
   unit: 'TRY/kWh';
   ratesTryPerKwh: {
@@ -14,15 +17,27 @@ export interface TariffMetadata {
     puant: number;  // 17:00 - 22:00
     gece: number;   // 22:00 - 06:00
   };
+  provenanceNotes: string;
 }
 
 export interface CarbonFactorMetadata {
   authority: 'TEİAŞ & TEDAŞ';
   sourceReport: 'TEİAŞ 2023-2024 Türkiye Elektrik Üretim-İletim İstatistikleri & TEDAŞ Kayıp-Kaçak Raporu';
   effectiveYear: 2024;
+  verificationStatus: 'UNVERIFIED_MODEL_ESTIMATE' | 'VERIFIED_OFFICIAL_STATUTORY';
+  datasetType: 'MODEL_ESTIMATE_HIGH_FOSSIL_PEAK' | 'OFFICIAL_NATIONAL_INVENTORY';
   unit: 'kg CO2e / kWh';
-  generationEmissionFactor: number;    // 0.462 kg CO2e / kWh (santral çıkışı)
-  consumptionPointEmissionFactor: number; // 0.498 kg CO2e / kWh (iletim ve dağıtım teknik kayıpları dahil nihai sayaç noktası)
+  generationEmissionFactor: number;    // 0.462 kg CO2e / kWh (santral çıkışı model tahmini)
+  consumptionPointEmissionFactor: number; // 0.498 kg CO2e / kWh (iletim ve dağıtım teknik kayıpları dahil nihai sayaç noktası model tahmini)
+  officialStatutoryBenchmark?: {
+    authority: 'ETKB EVÇED';
+    documentNo: 'ETKB-EVÇED-FRM-042';
+    year: 2023;
+    gridAverageGenerationFactor: 0.434; // 0.434 kg CO2e / kWh resmi TEİAŞ/ETKB şebeke ortalaması
+    gridAverageConsumptionFactor: 0.469; // ~0.469 kg CO2e / kWh iletim-dağıtım kayıp düzeltmeli nihai tüketim
+    unit: 'kg CO2e / kWh';
+  };
+  provenanceNotes: string;
 }
 
 export interface NILMConfidenceReport {
@@ -64,6 +79,9 @@ export class EnergyIntelligenceEngine {
     officialGazetteNo: '32590',
     tariffVersion: '2024-Q3-MESKEN-01',
     effectiveDate: '2024-07-01',
+    datasetType: 'HISTORICAL_BENCHMARK',
+    validityPeriod: '2024-07-01_to_2024-10-01',
+    isCurrentLiveTariff: false, // Subsequent 2024/2025 EPDK decisions (e.g. 5,000 kWh/yr threshold) alter active retail billing
     currency: 'TRY',
     unit: 'TRY/kWh',
     ratesTryPerKwh: {
@@ -71,16 +89,29 @@ export class EnergyIntelligenceEngine {
       puant: 6.85,
       gece: 2.15,
     },
+    provenanceNotes: 'Tarihsel referans veri setidir (2024 Q3). Canlı faturalandırma için güncel EPDK Kurul Kararları ve yıllık 5.000 kWh tüketim kademe eşiği uygulanmalıdır.',
   };
 
   public static readonly OFFICIAL_CARBON_FACTORS_2024: CarbonFactorMetadata = {
     authority: 'TEİAŞ & TEDAŞ',
     sourceReport: 'TEİAŞ 2023-2024 Türkiye Elektrik Üretim-İletim İstatistikleri & TEDAŞ Kayıp-Kaçak Raporu',
     effectiveYear: 2024,
+    verificationStatus: 'UNVERIFIED_MODEL_ESTIMATE',
+    datasetType: 'MODEL_ESTIMATE_HIGH_FOSSIL_PEAK',
     unit: 'kg CO2e / kWh',
-    generationEmissionFactor: 0.462,      // 0.462 kg CO2e / kWh
-    consumptionPointEmissionFactor: 0.498, // 0.498 kg CO2e / kWh (iletim-dağıtım kaybı %7.3 dahil)
+    generationEmissionFactor: 0.462,      // 0.462 kg CO2e / kWh (puant fosil marjinal santral ağırlıklı model tahmini)
+    consumptionPointEmissionFactor: 0.498, // 0.498 kg CO2e / kWh (iletim-dağıtım kaybı %7.3 dahil model tahmini)
+    officialStatutoryBenchmark: {
+      authority: 'ETKB EVÇED',
+      documentNo: 'ETKB-EVÇED-FRM-042',
+      year: 2023,
+      gridAverageGenerationFactor: 0.434,
+      gridAverageConsumptionFactor: 0.469,
+      unit: 'kg CO2e / kWh',
+    },
+    provenanceNotes: '0.462 ve 0.498 değerleri puant saatlerdeki termik santral marjinal yükünü modelleyen doğrulanmamış model tahminleridir. Resmi ulusal envanter için ETKB-EVÇED-FRM-042 (2023 ortalama 0.434 kg CO2e/kWh) esas alınır.',
   };
+
 
   /**
    * Evaluates current time of day against official EPDK 3-time tariff,
