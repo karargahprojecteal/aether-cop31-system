@@ -152,16 +152,37 @@ AETHER's Non-Intrusive Load Monitoring (NILM) engine disaggregates whole-home co
 
 ---
 
-## 6. Regulatory Risk & Provenance Findings Matrix
+---
+
+## 6. Master Provenance, Verification Status & Confidence Grades Table
+
+| Parameter / Factor | Value | Unit | Source Authority | Regulatory Reference & Date | Classification | Verification Status | Confidence Grade |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **Gündüz Tarifesi** | 4.20 | TRY/kWh | EPDK | Kurul Kararı 12711 / RG 32590 (01.07.2024) | Tarihsel Referans (`2024-Q3-MESKEN-01`) | **VERIFIED_BENCHMARK** | `STATUTORY_BENCHMARK` |
+| **Puant Tarifesi** | 6.85 | TRY/kWh | EPDK | Kurul Kararı 12711 / RG 32590 (01.07.2024) | Tarihsel Referans (`2024-Q3-MESKEN-01`) | **VERIFIED_BENCHMARK** | `STATUTORY_BENCHMARK` |
+| **Gece Tarifesi** | 2.15 | TRY/kWh | EPDK | Kurul Kararı 12711 / RG 32590 (01.07.2024) | Tarihsel Referans (`2024-Q3-MESKEN-01`) | **VERIFIED_BENCHMARK** | `STATUTORY_BENCHMARK` |
+| **Canlı Mesken Faturası (>5k kWh)** | Değişken (PTF+YEKDEM) | TRY/kWh | EPDK | 2025 Son Kaynak Tedarik Tarifesi | Canlı Dinamik Tarife (Canlı Fatura) | **NOT YET IMPLEMENTED** | `REQUIRES_LIVE_EPIAS_API` |
+| **Resmi Şebeke Üretim Emisyonu** | 0.434 | kg CO2e/kWh | ETKB EVÇED | Form: `ETKB-EVÇED-FRM-042` (2023 Raporu) | Ulusal Şebeke Ortalama Envanteri | **VERIFIED_OFFICIAL_STATUTORY** | `HIGH_LEGAL_CERTAINTY` |
+| **Resmi Tüketim Noktası Emisyonu** | 0.469 | kg CO2e/kWh | ETKB EVÇED | Form: `ETKB-EVÇED-FRM-042` (2023 Raporu) | Kayıp Düzeltmeli Ulusal Ortalama | **VERIFIED_OFFICIAL_STATUTORY** | `HIGH_LEGAL_CERTAINTY` |
+| **AETHER Model Üretim Emisyonu** | 0.462 | kg CO2e/kWh | TEİAŞ / Simülasyon | Fosil Marjinal Puant Simülasyonu | Puant Tepe Yük Modeli | **NOT_VERIFIED (MODEL ONLY)** | `ESTIMATED_HEURISTIC` |
+| **AETHER Model Tüketim Emisyonu** | 0.498 | kg CO2e/kWh | TEDAŞ / Simülasyon | %7.3 İletim-Dağıtım Kayıp Katsayısı | Nihai Sayaç Marjinal Modeli | **NOT_VERIFIED (MODEL ONLY)** | `ESTIMATED_HEURISTIC` |
+
+> [!IMPORTANT] **NOT VERIFIED KURALI:**
+> `0.462` ve `0.498` değerleri resmi ulusal sera gazı envanterinde yer almamaktadır; puant saatlerdeki termik santral marjinal yükünü modelleyen simülasyon katsayılarıdır. Sistem bu değerleri resmî envanter verisi olarak sunamaz; yasal raporlamalarda `ETKB-EVÇED-FRM-042` standardı (`0.434` / `0.469`) kullanılmalıdır.
+
+---
+
+## 7. Regulatory Risk & Provenance Findings Matrix
 
 | Finding ID | Scope | Issue Description | Severity | Remediation Verification |
 | :--- | :--- | :--- | :--- | :--- |
 | **REG-PROV-01** | EPDK Tariff | Rates were labeled as live without noting 2025 SKTT threshold. | **MEDIUM** | Labeled as `HISTORICAL_BENCHMARK` (`2024-Q3-MESKEN-01`). |
-| **REG-PROV-02** | Carbon Factor | 0.462 / 0.498 represented as official without source qualification. | **MEDIUM** | Tagged as `UNVERIFIED_MODEL_ESTIMATE`; cited `ETKB-EVÇED-FRM-042`. |
+| **REG-PROV-02** | Carbon Factor | 0.462 / 0.498 represented as official without source qualification. | **MEDIUM** | Tagged as `NOT_VERIFIED (MODEL ESTIMATE)`; cited `ETKB-EVÇED-FRM-042`. |
 | **REG-PROV-03** | Savings Claim | Peak-shaving savings could be misconstrued as verified bill credits. | **LOW** | Enforced `isVerifiedMeasuredSavings: false` on all projected outputs. |
 
 ---
 
-## 7. Compliance Statement
+## 8. Compliance Statement
 
 All energy analytics, tariff lookups, and emission accounting algorithms within AETHER now adhere to strict statutory provenance rules. Algorithmic estimates are mathematically labeled, and national benchmarks are cited in accordance with EPDK and ETKB standards.
+

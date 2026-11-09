@@ -161,18 +161,61 @@ flowchart LR
 
 ---
 
-## 6. Disaster Recovery & Reconstruction Protocols
+## 6. Comprehensive Threat & Failure Scenario Evaluations
+
+To establish mathematical rigor, the audit subsystem is challenged against four critical failure and adversarial scenarios:
+
+### 6.1 Scenario A: Cryptographic Key Loss (Anahtar Kaybı)
+- **Failure Mode:** The environment variable `AUDIT_ANCHOR_SECRET` is lost, overwritten, or destroyed without backup.
+- **Impact on System:** Past checkpoints cannot be mathematically re-verified using `verifyCheckpointSignature()`. However, the internal SHA-256 database hash chain (`prev_record_hash -> record_hash`) remains 100% intact and verifiable via `verifyIntegrity()`.
+- **Mitigation & Recovery:**
+  1. `AuditAnchorStore` supports `previousKeys` / `addRotationKey()`. When rotating keys, old keys must be archived into an encrypted key escrow (e.g. AWS Secrets Manager or HashiCorp Vault).
+  2. For production, transition to asymmetric Cloud KMS (where public keys are distributed for verification and private keys cannot be deleted or exported).
+
+### 6.2 Scenario B: Service Disruption & Outage (Servis Kesintisi)
+- **Failure Mode:** During high transaction spikes, the external anchoring endpoint or worker process experiences network timeout or process crash.
+- **Impact on System:** In-memory checkpoints fail to register for the newest audit entry.
+- **Mitigation & Recovery:**
+  1. Audit record creation inside PostgreSQL is wrapped in a strict ACID transaction.
+  2. Checkpoint creation is triggered within the same serial execution block. If the anchor fails, the transaction logs an unanchored tail warning.
+  3. A background reconciliation daemon re-synchronizes the latest database tail hash to the anchor store once service connectivity resumes.
+
+### 6.3 Scenario C: Replay Attacks (Replay Saldırıları)
+- **Failure Mode:** An adversary intercepts a previously valid checkpoint and re-submits it to masquerade as the current ledger state after unauthorized deletions.
+- **Impact on System:** The replayed checkpoint has a valid cryptographic signature.
+- **Defeating Mechanism:** Replay is defeated by the strictly monotonic sequence counter (`seq`). `verifyIntegrity()` asserts that:
+  $$\text{checkpoint.lastSeq} \ge \text{max}(\text{table.seq})$$
+  Submitting an older checkpoint causes an immediate sequence discrepancy error (`lastSeq mismatch`), flagging the replay attempt.
+
+### 6.4 Scenario D: Database Rollback Attacks (Rollback Saldırıları)
+- **Failure Mode:** A malicious database administrator restores an older physical snapshot (e.g. from 5 days ago) to erase recent audit events.
+- **Impact on System:** The restored database has valid internal hash links up to 5 days ago, but recent events are missing.
+- **Defeating Mechanism:** Because the external anchor maintains the latest sequence and hash in a separate trust boundary, `verifyIntegrity()` compares the restored database tail against the anchor:
+  $$\text{restored\_tail.lastSeq} < \text{anchor.lastSeq} \implies \text{CRITICAL TAMPER: Tail Truncation Detected}$$
+  The rollback attack is instantly detected and halted before tenant traffic can be served.
+
+---
+
+## 7. Production Audit Integrity Boundary Statement (MANDATORY RULE)
+
+> [!CAUTION] **HARİCİ GÜVEN SINIRI OLMADAN CANLI DENETİM İZİ İDDİASINDA BULUNULAMAZ:**
+> Mevcut `AuditAnchorStore` bellek-içi (RAM) yapısı, çoklu anahtar rotasyonu ve soğuk yedek dışa/içe aktarımı ile yerel geliştirme, staging ve COP31 demonstrasyon gereksinimlerini eksiksiz karşılamaktadır.  
+> Ancak, **uygulama prosesi dışındaki bağımsız bir harici güven sınırı (AWS S3 Object Lock in Compliance Mode, Cloud KMS HSM asimetrik imzalama veya RFC 3161 Time-Stamp Authority) devreye alınmadan**, AETHER canlı ortamda yasal olarak bağlayıcı ve dış denetime tabi bağımsız kurumsal denetim izi (*production tamper-evident compliance audit*) garantisi veremez. Bu durum canlıya geçiş için zorunlu bir koşul olarak tescil edilmiştir.
+
+---
+
+## 8. Disaster Recovery & Reconstruction Protocols
 
 When an organization experiences database corruption, ransomware attempts, or disaster recovery failover:
 
-### 6.1 Cold Export Protocol
+### 8.1 Cold Export Protocol
 ```typescript
 const snapshot = store.exportCheckpoints();
 // Serialized to encrypted persistent storage or cold vault
 fs.writeFileSync('/var/vault/audit_checkpoints.json', JSON.stringify(snapshot));
 ```
 
-### 6.2 Restoration Protocol
+### 8.2 Restoration Protocol
 1. Restore database from verified physical backup (`pg_restore -d aether_production db_backup.dump`).
 2. Reload cryptographic anchors (`store.importCheckpoints(snapshot)`).
 3. Execute `auditRepo.verifyIntegrity(tenantId)`:
@@ -182,7 +225,7 @@ fs.writeFileSync('/var/vault/audit_checkpoints.json', JSON.stringify(snapshot));
 
 ---
 
-## 7. Automated Test Verification Evidence
+## 9. Automated Test Verification Evidence
 
 The security guarantees documented herein are proven by automated integration suites:
 
@@ -197,6 +240,7 @@ The security guarantees documented herein are proven by automated integration su
 
 ---
 
-## 8. Conclusion
+## 10. Conclusion
 
 AETHER's audit subsystem establishes defensible, mathematically verifiable immutability. With key rotation and disaster recovery export/import now implemented in `AuditAnchorStore`, the platform is ready for staging and demonstration. Cloud KMS / WORM anchoring is established as the final production deployment condition.
+

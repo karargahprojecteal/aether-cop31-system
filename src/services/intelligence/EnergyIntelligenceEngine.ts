@@ -24,7 +24,7 @@ export interface CarbonFactorMetadata {
   authority: 'TEİAŞ & TEDAŞ';
   sourceReport: 'TEİAŞ 2023-2024 Türkiye Elektrik Üretim-İletim İstatistikleri & TEDAŞ Kayıp-Kaçak Raporu';
   effectiveYear: 2024;
-  verificationStatus: 'UNVERIFIED_MODEL_ESTIMATE' | 'VERIFIED_OFFICIAL_STATUTORY';
+  verificationStatus: 'NOT_VERIFIED' | 'UNVERIFIED_MODEL_ESTIMATE' | 'VERIFIED_OFFICIAL_STATUTORY';
   datasetType: 'MODEL_ESTIMATE_HIGH_FOSSIL_PEAK' | 'OFFICIAL_NATIONAL_INVENTORY';
   unit: 'kg CO2e / kWh';
   generationEmissionFactor: number;    // 0.462 kg CO2e / kWh (santral çıkışı model tahmini)
@@ -96,7 +96,7 @@ export class EnergyIntelligenceEngine {
     authority: 'TEİAŞ & TEDAŞ',
     sourceReport: 'TEİAŞ 2023-2024 Türkiye Elektrik Üretim-İletim İstatistikleri & TEDAŞ Kayıp-Kaçak Raporu',
     effectiveYear: 2024,
-    verificationStatus: 'UNVERIFIED_MODEL_ESTIMATE',
+    verificationStatus: 'NOT_VERIFIED', // Formally marked NOT_VERIFIED for statutory inventory reporting
     datasetType: 'MODEL_ESTIMATE_HIGH_FOSSIL_PEAK',
     unit: 'kg CO2e / kWh',
     generationEmissionFactor: 0.462,      // 0.462 kg CO2e / kWh (puant fosil marjinal santral ağırlıklı model tahmini)
@@ -109,8 +109,37 @@ export class EnergyIntelligenceEngine {
       gridAverageConsumptionFactor: 0.469,
       unit: 'kg CO2e / kWh',
     },
-    provenanceNotes: '0.462 ve 0.498 değerleri puant saatlerdeki termik santral marjinal yükünü modelleyen doğrulanmamış model tahminleridir. Resmi ulusal envanter için ETKB-EVÇED-FRM-042 (2023 ortalama 0.434 kg CO2e/kWh) esas alınır.',
+    provenanceNotes: '0.462 ve 0.498 değerleri puant saatlerdeki termik santral marjinal yükünü modelleyen doğrulanmamış model tahminleridir (NOT VERIFIED AS OFFICIAL INVENTORY). Resmi ulusal envanter için ETKB-EVÇED-FRM-042 (2023 ortalama 0.434 kg CO2e/kWh) esas alınır.',
   };
+
+  /**
+   * Evaluates the provenance and verification status of platform datasets.
+   */
+  public static verifyDataProvenance(dataset: 'EPDK_TARIFF' | 'CARBON_FACTOR'): {
+    status: 'VERIFIED_BENCHMARK' | 'NOT_VERIFIED';
+    authority: string;
+    datasetType: string;
+    isStatutoryOfficial: boolean;
+    provenanceNotes: string;
+  } {
+    if (dataset === 'EPDK_TARIFF') {
+      return {
+        status: 'VERIFIED_BENCHMARK',
+        authority: this.OFFICIAL_EPDK_TARIFF_2024.authority,
+        datasetType: this.OFFICIAL_EPDK_TARIFF_2024.datasetType,
+        isStatutoryOfficial: false, // Historical benchmark, not active retail live tariff
+        provenanceNotes: this.OFFICIAL_EPDK_TARIFF_2024.provenanceNotes,
+      };
+    }
+
+    return {
+      status: 'NOT_VERIFIED',
+      authority: this.OFFICIAL_CARBON_FACTORS_2024.authority,
+      datasetType: this.OFFICIAL_CARBON_FACTORS_2024.datasetType,
+      isStatutoryOfficial: false, // 0.462 / 0.498 are unverified model estimates
+      provenanceNotes: this.OFFICIAL_CARBON_FACTORS_2024.provenanceNotes,
+    };
+  }
 
 
   /**

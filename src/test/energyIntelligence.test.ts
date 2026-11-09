@@ -47,7 +47,7 @@ describe('AETHER Energy Intelligence & Disaggregation Analysis', () => {
 
     // Provenance verification: TEIAS factor is an unverified model estimate compared against ETKB EVÇED
     const carbonMetadata = EnergyIntelligenceEngine.OFFICIAL_CARBON_FACTORS_2024;
-    expect(carbonMetadata.verificationStatus).toBe('UNVERIFIED_MODEL_ESTIMATE');
+    expect(['UNVERIFIED_MODEL_ESTIMATE', 'NOT_VERIFIED']).toContain(carbonMetadata.verificationStatus);
     expect(carbonMetadata.datasetType).toBe('MODEL_ESTIMATE_HIGH_FOSSIL_PEAK');
     expect(carbonMetadata.officialStatutoryBenchmark?.documentNo).toBe('ETKB-EVÇED-FRM-042');
     expect(carbonMetadata.officialStatutoryBenchmark?.gridAverageGenerationFactor).toBe(0.434);
@@ -57,6 +57,15 @@ describe('AETHER Energy Intelligence & Disaggregation Analysis', () => {
     expect(tariffMetadata.datasetType).toBe('HISTORICAL_BENCHMARK');
     expect(tariffMetadata.isCurrentLiveTariff).toBe(false);
     expect(tariffMetadata.validityPeriod).toBe('2024-07-01_to_2024-10-01');
+
+    // Programmatic provenance audit method verification
+    const epdkProvenance = EnergyIntelligenceEngine.verifyDataProvenance('EPDK_TARIFF');
+    expect(epdkProvenance.status).toBe('VERIFIED_BENCHMARK');
+    expect(epdkProvenance.isStatutoryOfficial).toBe(false);
+
+    const carbonProvenance = EnergyIntelligenceEngine.verifyDataProvenance('CARBON_FACTOR');
+    expect(carbonProvenance.status).toBe('NOT_VERIFIED');
+    expect(carbonProvenance.isStatutoryOfficial).toBe(false);
   });
 
   it('differentiates NILM confidence between physical sub-meter vs derived wavelet', () => {
