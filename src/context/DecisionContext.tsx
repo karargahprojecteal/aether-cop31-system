@@ -5,8 +5,6 @@ import { geminiDecisionEngineInstance } from '../services/ai/geminiDecisionEngin
 
 interface DecisionContextType {
   state: DecisionEngineState;
-  apiKey: string;
-  setApiKey: (key: string) => void;
   hasValidApiKey: boolean;
   toggleAutonomousMode: () => void;
   applyDecision: (decisionId: string, isAuto?: boolean) => void;
@@ -27,8 +25,7 @@ const DecisionContext = createContext<DecisionContextType | undefined>(undefined
 
 export const DecisionProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { telemetry, scenarios, applyIntervention } = useTelemetry();
-  const [apiKey, setApiKeyState] = useState<string>(() => geminiDecisionEngineInstance.getApiKey());
-  const [isAutonomousMode, setIsAutonomousMode] = useState<boolean>(true); // Varsayılan otonom mod aktif
+  const [isAutonomousMode, setIsAutonomousMode] = useState<boolean>(true);
   const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
   const [lastAnalysisTimestamp, setLastAnalysisTimestamp] = useState<string | null>(null);
   const [decisions, setDecisions] = useState<AIDecision[]>([]);
@@ -36,7 +33,7 @@ export const DecisionProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [auditTrail, setAuditTrail] = useState<DecisionContextType['auditTrail']>([
     {
       id: 'audit-1',
-      timestamp: new Date(Date.now() - 1000 * 60 * 12).toLocaleTimeString(),
+      timestamp: '11:42:00',
       decisionTitle: 'Gece HVAC B Blok Frekans İzolasyonu',
       action: 'ISOLATE_PHANTOM_CIRCUITS',
       kwReduction: 14.2,
@@ -45,7 +42,7 @@ export const DecisionProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     },
     {
       id: 'audit-2',
-      timestamp: new Date(Date.now() - 1000 * 60 * 5).toLocaleTimeString(),
+      timestamp: '11:49:00',
       decisionTitle: 'Pik Tarife Ön Soğutma Modülasyonu',
       action: 'EXECUTE_PEAK_SHAVING',
       kwReduction: 18.0,
@@ -56,11 +53,6 @@ export const DecisionProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   const activeScenario = scenarios.find((s) => s.isActive) || null;
   const lastAnalyzedScenarioRef = useRef<string | null>(null);
-
-  const setApiKey = (key: string) => {
-    geminiDecisionEngineInstance.setApiKey(key);
-    setApiKeyState(key);
-  };
 
   const toggleAutonomousMode = () => {
     setIsAutonomousMode((prev) => !prev);
@@ -84,7 +76,7 @@ export const DecisionProvider: React.FC<{ children: React.ReactNode }> = ({ chil
               co2ReductionKg: d.projectedCo2ReductionKg,
               mode: isAuto ? 'AUTONOMOUS' : 'MANUAL_APPROVAL',
             },
-            ...curr.slice(0, 19), // Son 20 kayıt
+            ...curr.slice(0, 19),
           ]);
 
           if (isAuto) {
@@ -122,13 +114,11 @@ export const DecisionProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
       if (generated.length > 0) {
         setDecisions((prev) => {
-          // Mevcut uygulanmamış aynı tip kararları yenile
           const existingIds = new Set(prev.filter((d) => d.status === 'PENDING_APPROVAL').map((d) => d.anomalyType));
           const newUnique = generated.filter((g) => !existingIds.has(g.anomalyType));
           return [...newUnique, ...prev].slice(0, 15);
         });
 
-        // Otonom Mod açıksa: Yüksek ve kritik öncelikli kararları 2 saniye sonra otonom onayla
         if (isAutonomousMode) {
           generated.forEach((dec) => {
             if (dec.priority === 'CRITICAL' || dec.priority === 'HIGH') {
@@ -146,7 +136,6 @@ export const DecisionProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
   }, [telemetry, isAnalyzing, activeScenario, isAutonomousMode, applyDecision]);
 
-  // İlk açılışta veya stres senaryosu tetiklendiğinde otomatik karar analizi
   useEffect(() => {
     const currentScenId = activeScenario ? `${activeScenario.id}-${activeScenario.isActive}` : null;
     if (telemetry && currentScenId !== lastAnalyzedScenarioRef.current) {
@@ -155,7 +144,6 @@ export const DecisionProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
   }, [activeScenario, telemetry, triggerAnalysis]);
 
-  // Periyodik otonom zeka döngüsü (her 25 saniyede bir akıllı kontrol)
   useEffect(() => {
     const interval = setInterval(() => {
       triggerAnalysis();
@@ -179,8 +167,6 @@ export const DecisionProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   const value = {
     state,
-    apiKey,
-    setApiKey,
     hasValidApiKey: geminiDecisionEngineInstance.hasValidKey(),
     toggleAutonomousMode,
     applyDecision,
